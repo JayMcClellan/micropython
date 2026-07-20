@@ -1,0 +1,15 @@
+{
+    "deploy": [
+        "../deploy.md"
+    ],
+    "docs": "",
+    "features": [],
+    "images": [
+        "octopus_pro_h723.jpg"
+    ],
+    "mcu": "stm32h7",
+    "product": "Octopus Pro V1.1 H723",
+    "thumbnail": "",
+    "url": "https://github.com/bigtreetech/BIGTREETECH-OCTOPUS-Pro",
+    "vendor": "BIGTREETECH"
+}
