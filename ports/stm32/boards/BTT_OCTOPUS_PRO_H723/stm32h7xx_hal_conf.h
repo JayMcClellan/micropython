@@ -6,7 +6,8 @@
 #define MICROPY_INCLUDED_STM32H7XX_HAL_CONF_H
 
 // Oscillator values in Hz
-#define HSE_VALUE (8000000)
+// This board has a 25MHz HSE crystal.
+#define HSE_VALUE (25000000)
 #define LSE_VALUE (32768)
 #define EXTERNAL_CLOCK_VALUE (12288000)
 

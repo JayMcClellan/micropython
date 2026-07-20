@@ -7,38 +7,36 @@
 #define MICROPY_HW_ENABLE_DAC               (1)
 #define MICROPY_HW_ENABLE_USB               (1)
 #define MICROPY_HW_ENABLE_SDCARD            (1)
-#define MICROPY_HW_HAS_SWITCH               (1)
 #define MICROPY_HW_HAS_FLASH                (1)
 
 #define MICROPY_BOARD_EARLY_INIT            BTT_OCTOPUS_PRO_H723_board_early_init
 
-// There is no external HS crystal, instead it comes from ST-LINK MCO output which is 8MHz.
+// This board has a 25MHz HSE crystal.
 // The following gives a 550MHz CPU speed.
-#define MICROPY_HW_CLK_USE_BYPASS           (1)
-#define MICROPY_HW_CLK_PLLM                 (4)
-#define MICROPY_HW_CLK_PLLN                 (275)
+#define MICROPY_HW_CLK_USE_HSE              (1)
+#define MICROPY_HW_CLK_PLLM                 (5)
+#define MICROPY_HW_CLK_PLLN                 (110)
 #define MICROPY_HW_CLK_PLLP                 (1)
-#define MICROPY_HW_CLK_PLLQ                 (4)
+#define MICROPY_HW_CLK_PLLQ                 (5)
 #define MICROPY_HW_CLK_PLLR                 (2)
-#define MICROPY_HW_CLK_PLLVCI               (RCC_PLL1VCIRANGE_1)
+#define MICROPY_HW_CLK_PLLVCI               (RCC_PLL1VCIRANGE_2)
 #define MICROPY_HW_CLK_PLLVCO               (RCC_PLL1VCOWIDE)
 #define MICROPY_HW_CLK_PLLFRAC              (0)
 
 // The USB clock is set using PLL3
-#define MICROPY_HW_CLK_PLL3M                (4)
-#define MICROPY_HW_CLK_PLL3N                (120)
-#define MICROPY_HW_CLK_PLL3P                (2)
-#define MICROPY_HW_CLK_PLL3Q                (5)
+#define MICROPY_HW_CLK_PLL3M                (5)
+#define MICROPY_HW_CLK_PLL3N                (96)
+#define MICROPY_HW_CLK_PLL3P                (10)
+#define MICROPY_HW_CLK_PLL3Q                (10)
 #define MICROPY_HW_CLK_PLL3R                (2)
-#define MICROPY_HW_CLK_PLL3VCI              (RCC_PLL3VCIRANGE_1)
+#define MICROPY_HW_CLK_PLL3VCI              (RCC_PLL3VCIRANGE_2)
 #define MICROPY_HW_CLK_PLL3VCO              (RCC_PLL3VCOWIDE)
 #define MICROPY_HW_CLK_PLL3FRAC             (0)
 
 // 4 wait states
 #define MICROPY_HW_FLASH_LATENCY            FLASH_LATENCY_4
 
-// The board has an external 32kHz crystal attached
-#define MICROPY_HW_RTC_USE_LSE              (1)
+// No external 32kHz crystal on this board; RTC uses the internal LSI.
 
 // UART config
 #define MICROPY_HW_UART2_TX                 (pin_D5)
@@ -73,12 +71,6 @@
 #define MICROPY_HW_SPI3_MISO                (pin_B4)
 #define MICROPY_HW_SPI3_MOSI                (pin_B5)
 
-// USRSW is pulled low. Pressing the button makes the input go high.
-#define MICROPY_HW_USRSW_PIN                (pin_C13)
-#define MICROPY_HW_USRSW_PULL               (GPIO_NOPULL)
-#define MICROPY_HW_USRSW_EXTI_MODE          (GPIO_MODE_IT_RISING)
-#define MICROPY_HW_USRSW_PRESSED            (1)
-
 // LEDs
 #define MICROPY_HW_LED1                     (pin_B0)    // green
 #define MICROPY_HW_LED2                     (pin_E1)    // yellow
@@ -101,16 +93,5 @@
 #define MICROPY_HW_SDCARD_DETECT_PIN        (pin_G2)
 #define MICROPY_HW_SDCARD_DETECT_PULL       (GPIO_PULLUP)
 #define MICROPY_HW_SDCARD_DETECT_PRESENT    (GPIO_PIN_RESET)
-
-// Ethernet via RMII
-#define MICROPY_HW_ETH_MDC                  (pin_C1)
-#define MICROPY_HW_ETH_MDIO                 (pin_A2)
-#define MICROPY_HW_ETH_RMII_REF_CLK         (pin_A1)
-#define MICROPY_HW_ETH_RMII_CRS_DV          (pin_A7)
-#define MICROPY_HW_ETH_RMII_RXD0            (pin_C4)
-#define MICROPY_HW_ETH_RMII_RXD1            (pin_C5)
-#define MICROPY_HW_ETH_RMII_TX_EN           (pin_G11)
-#define MICROPY_HW_ETH_RMII_TXD0            (pin_G13)
-#define MICROPY_HW_ETH_RMII_TXD1            (pin_B13)
 
 void BTT_OCTOPUS_PRO_H723_board_early_init(void);
