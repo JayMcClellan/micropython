@@ -189,7 +189,7 @@ not itemized separately on the official pinout diagram, which instead shows
 an EXP1/EXP2 block matching these same values.)
 
 **EXP2** (10-pin): `EXP2_1..7 = PA6, PA5, PB1, PA4, PB2, PA7, PC15`,
-`EXP2_8 = RST`, `EXP2_9 = GND`, `EXP2_10 = PC5`. ✅ (confirmed by the
+`EXP2_8 = RST`, `EXP2_9 = GND`, `EXP2_10 = n/c`. ✅ (confirmed by the
 official diagram, which labels this header directly).
 
 These two headers carry `BEEPER`, `LCD_ENA/RS/D4-D7`, `BTN_ENC`, `BTN_EN1/2`,
@@ -237,9 +237,10 @@ Note the crossover: the module's RXD0 connects to the STM32's USART3_TX
 expected UART crossover, not an error. EN is hardwired to VCC (module
 always enabled at boot; no GPIO control over module enable).
 
-**Probe / BLTouch** (`J43`, 5-pin): **control = PB6, data = PB7** ✅
-(confirmed by the official diagram, labeled `Probe`). Signal is buffered
-through `U1` (74LVC1G125) per the schematic.
+**BLTouch** (`J43`, 5-pin): **control = PB6, data = PB7** ✅
+(confirmed by the official diagram).
+
+**Probe** (`J40`, 3-pin): has a dedicated input, **pin3 = PC5** with a jumpered pull-up resistor.
 
 **Power-Det**: a separate low-power-detect input, **PC0** ✅ (confirmed by
 the official diagram, labeled `Power-Det`) — distinct from the probe pins
