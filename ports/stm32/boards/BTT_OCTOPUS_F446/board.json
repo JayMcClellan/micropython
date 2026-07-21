@@ -1,0 +1,15 @@
+{
+    "deploy": [
+        "../deploy.md"
+    ],
+    "docs": "",
+    "features": [],
+    "images": [
+        "octopus_v11_f446.jpg"
+    ],
+    "mcu": "stm32f4",
+    "product": "Octopus V1.1 F446",
+    "thumbnail": "",
+    "url": "",
+    "vendor": "BIGTREETECH"
+}
