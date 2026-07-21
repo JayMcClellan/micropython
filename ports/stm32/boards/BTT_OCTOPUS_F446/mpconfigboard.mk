@@ -18,3 +18,7 @@ TEXT1_ADDR = 0x08020000
 MICROPY_HW_ENABLE_ISR_UART_FLASH_FUNCS_IN_RAM = 1
 
 FROZEN_MANIFEST ?= $(BOARD_DIR)/manifest.py
+
+# Use the DAP-direct OpenOCD interface -- ST-Link V3 probes don't support
+# the older HLA transport that the shared boards/openocd_stm32f4.cfg uses.
+OPENOCD_CONFIG = boards/BTT_OCTOPUS_F446/openocd_stm32f4_dap.cfg

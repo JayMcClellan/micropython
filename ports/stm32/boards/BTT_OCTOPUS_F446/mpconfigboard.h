@@ -67,15 +67,16 @@
 
 // USB config
 // USB-C connector, on the dedicated OTG_FS core (fixed pins PA11/PA12).
-// Two CDC (virtual COM port) interfaces: one is the REPL, the other is
-// free for general use.
+// Single CDC (REPL) + MSC. Unlike the H723 Pro board (which uses the
+// OTG_HS core, with 8 IN endpoints), OTG_FS here only has 4 usable IN
+// endpoints -- not enough for CDC x2 (5 IN endpoints: MSC + 2x CDC
+// notify+data) at once.
+//
 // Unlike the H723 Pro board, this MCU has a genuinely independent second
 // USB controller (OTG_HS), wired to the USB-A connector (PB14/PB15,
-// pins.csv USB_A_DM/USB_A_DP). It's left unconfigured here so this board
-// behaves the same as the Pro board from Python -- it could be brought up
-// as a second, independent USB device later if wanted.
+// pins.csv USB_A_DM/USB_A_DP). It's left unconfigured here -- it could be
+// brought up as a second, independent USB device later if wanted.
 #define MICROPY_HW_USB_FS                   (1)
-#define MICROPY_HW_USB_CDC_NUM              (2)
 
 // CAN bus
 #define MICROPY_HW_CAN1_TX                  (pin_D1)
