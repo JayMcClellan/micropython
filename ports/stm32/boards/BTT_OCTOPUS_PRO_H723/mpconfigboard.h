@@ -1,5 +1,5 @@
 #define MICROPY_HW_BOARD_NAME               "BTT_OCTOPUS_PRO_H723"
-#define MICROPY_HW_MCU_NAME                 "STM32H723ZGT6"
+#define MICROPY_HW_MCU_NAME                 "STM32H723ZET6"
 
 #define MICROPY_HW_ENABLE_RTC               (1)
 #define MICROPY_HW_ENABLE_RNG               (0) // RNG needs proper configuration
@@ -93,7 +93,10 @@
 #define MICROPY_HW_CAN1_TX                  (pin_D1)
 #define MICROPY_HW_CAN1_RX                  (pin_D0)
 
-// SD card detect switch
+// SD card detect switch. Hardware-confirmed polarity: pyb.SDCard().present()
+// read False with a card inserted under the original (guessed) GPIO_PIN_RESET
+// polarity -- the switch pulls the pin low when the socket is empty, not
+// when a card is present.
 #define MICROPY_HW_SDCARD_DETECT_PIN        (pin_C14)
 #define MICROPY_HW_SDCARD_DETECT_PULL       (GPIO_PULLUP)
-#define MICROPY_HW_SDCARD_DETECT_PRESENT    (GPIO_PIN_RESET)
+#define MICROPY_HW_SDCARD_DETECT_PRESENT    (GPIO_PIN_SET)
