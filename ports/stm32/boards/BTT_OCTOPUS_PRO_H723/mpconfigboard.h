@@ -81,8 +81,6 @@
 // STM32H743, it has no separate OTG_FS core). In HS_IN_FS mode, the
 // port's H723-specific code path drives it out on PA11/PA12 (analog mode,
 // not a GPIO alternate function) -- the USB-C connector, per the schematic.
-// Two CDC (virtual COM port) interfaces: one is the REPL, the other is
-// free for general use.
 // PB14/PB15 (pins.csv USB_A_DM/USB_A_DP, the USB-A connector) are unused
 // by this config -- reserved in pins.csv for future OTG/host-mode support.
 #define MICROPY_HW_USB_HS                   (1)
