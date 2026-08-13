@@ -302,7 +302,11 @@ bool pyb_usb_dev_init(int dev_id, uint16_t vid, uint16_t pid, uint8_t mode, size
                     break;
                 #endif
                 default:
+                    #if MICROPY_HW_ENABLE_STORAGE
                     msc_unit_default[0] = &pyb_flash_type;
+                    #elif MICROPY_HW_ENABLE_SDCARD
+                    msc_unit_default[0] = &machine_sdcard_type;
+                    #endif
                     break;
             }
         }
@@ -555,7 +559,10 @@ static mp_obj_t pyb_usb_mode(size_t n_args, const mp_obj_t *pos_args, mp_map_t *
         }
         for (size_t i = 0; i < msc_n; ++i) {
             const mp_obj_type_t *type = mp_obj_get_type(items[i]);
-            if (type == &pyb_flash_type
+            if (0
+                #if MICROPY_HW_ENABLE_STORAGE
+                || type == &pyb_flash_type
+                #endif
                 #if MICROPY_HW_ENABLE_SDCARD
                 || type == &machine_sdcard_type
                 #endif

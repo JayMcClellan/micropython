@@ -7,7 +7,8 @@
 #define MICROPY_HW_ENABLE_DAC               (1)
 #define MICROPY_HW_ENABLE_USB               (1)
 #define MICROPY_HW_ENABLE_SDCARD            (1)
-#define MICROPY_HW_HAS_FLASH                (1)
+#define MICROPY_HW_HAS_FLASH                (0)
+#define MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE (0)
 
 // This board has a 25MHz HSE crystal.
 // The following gives a 550MHz CPU speed.
