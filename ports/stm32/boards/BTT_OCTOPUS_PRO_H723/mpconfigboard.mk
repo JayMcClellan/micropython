@@ -18,7 +18,6 @@ TEXT0_ADDR = 0x08000000
 endif
 
 # MicroPython settings
-# Plain FAT for the internal filesystem
 MICROPY_HW_ENABLE_ISR_UART_FLASH_FUNCS_IN_RAM = 1
 
 FROZEN_MANIFEST ?= $(BOARD_DIR)/manifest.py

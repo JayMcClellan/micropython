@@ -1,6 +1,6 @@
 /* This file is part of the MicroPython project, http://micropython.org/
  * The MIT License (MIT)
- * Copyright (c) 2019 Damien P. George
+ * Copyright (c) 2026 Jay McClellan
  */
 #ifndef MICROPY_INCLUDED_STM32H7XX_HAL_CONF_H
 #define MICROPY_INCLUDED_STM32H7XX_HAL_CONF_H
