@@ -118,7 +118,7 @@ static mp_obj_t motion_rig_init(size_t n_args, const mp_obj_t *args) {
         self->mem_size = mem_size;
     }
 
-    moco_status status = moco_rig_init(&self->rig, self->rig, mem_size, n_channels, n_segs, MOTION_CLOCK_HZ);
+    moco_status status = moco_rig_init(self->rig, mem_size, n_channels, n_segs, MOTION_CLOCK_HZ);
     if (status != MOCO_OK) {
         motion_rig_free(self);
         mp_raise_msg_varg(&mp_type_TypeError, MP_ERROR_TEXT("Initialization failed with n_channels=%d, n_segs=%d"), n_channels, n_segs);
