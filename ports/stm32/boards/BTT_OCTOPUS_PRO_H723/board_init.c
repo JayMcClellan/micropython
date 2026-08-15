@@ -1,6 +1,6 @@
 #include "py/mphal.h"
 #include "timer.h"
-#include "micromoco.h"
+#include "motion.h"
 
 // Experiment: TIM24 is unused by MicroPython on this MCU, so it's free to
 // drive directly. It's configured to count at 100kHz and fire an update
@@ -12,9 +12,7 @@ void TIM24_IRQHandler(void) {
 }
 
 void BTT_OCTOPUS_PRO_H723_board_early_init(void) {
-    // Smoke test: confirms micromoco builds and links. Expected to fail at
-    // runtime (NULL mem buffer) -- not yet doing anything real with it.
-    moco_group_init(NULL, NULL, 0, 0, 0, 0);
+    motion_init();
 
     mp_hal_pin_output(pin_E15);
     mp_hal_pin_low(pin_E15);
@@ -28,7 +26,7 @@ void BTT_OCTOPUS_PRO_H723_board_early_init(void) {
     // using ARR=0 -- with ARR=0 the counter reloads every clock edge and
     // never holds a nonzero value, so CNT is useless as a liveness check.
     TIM24->PSC = 0;
-    TIM24->ARR = (timer_get_source_freq(24) / 4000000) - 1;
+    TIM24->ARR = (timer_get_source_freq(24) / 100000) - 1;
     TIM24->EGR = TIM_EGR_UG; // load PSC/ARR, reset CNT
     TIM24->SR = ~TIM_SR_UIF; // clear UIF set by the forced update above
     TIM24->DIER = TIM_DIER_UIE;
