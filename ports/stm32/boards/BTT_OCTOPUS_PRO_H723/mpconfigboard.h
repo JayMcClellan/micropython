@@ -10,6 +10,8 @@
 #define MICROPY_HW_HAS_FLASH                (0)
 #define MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE (0)
 
+#define MICROPY_BOARD_EARLY_INIT            BTT_OCTOPUS_PRO_H723_board_early_init
+
 // This board has a 25MHz HSE crystal.
 // The following gives a 550MHz CPU speed.
 #define MICROPY_HW_CLK_USE_HSE              (1)
@@ -99,3 +101,5 @@
 #define MICROPY_HW_SDCARD_DETECT_PIN        (pin_C14)
 #define MICROPY_HW_SDCARD_DETECT_PULL       (GPIO_PULLUP)
 #define MICROPY_HW_SDCARD_DETECT_PRESENT    (GPIO_PIN_SET)
+
+void BTT_OCTOPUS_PRO_H723_board_early_init(void);

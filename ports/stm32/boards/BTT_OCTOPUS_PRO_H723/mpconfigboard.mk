@@ -24,3 +24,7 @@ FROZEN_MANIFEST ?= $(BOARD_DIR)/manifest.py
 
 # Flash tool configuration
 OPENOCD_CONFIG = boards/BTT_OCTOPUS_PRO_H723/openocd_stm32h7.cfg
+
+# micromoco (experimental)
+CFLAGS += -I$(BOARD_DIR)/lib/micromoco
+SRC_C += $(BOARD_DIR)/stepper.c $(BOARD_DIR)/lib/micromoco/micromoco.c
