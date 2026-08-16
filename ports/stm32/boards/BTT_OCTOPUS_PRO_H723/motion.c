@@ -150,6 +150,107 @@ static mp_obj_t motion_clamped_list(mp_int_t n_channels, uint32_t bits) {
 }
 
 /******************************************************************************/
+// Stats: a fresh snapshot returned by Rig.get_stats(). The first block of
+// fields mirrors moco_stats's counters directly; the second unpacks its
+// MOCO_FLAG_* sticky bitmask into individually named booleans.
+
+enum {
+    STATS_updates, STATS_steps, STATS_seg_completed, STATS_slips, STATS_slip_ticks,
+    STATS_max_late, STATS_floor_hits, STATS_queue_high_water,
+    STATS_clamp_v, STATS_clamp_a, STATS_corner_violations, STATS_errors,
+    STATS_slip, STATS_floor_hit, STATS_clamp_v_flag, STATS_clamp_a_flag,
+    STATS_corner_violation, STATS_error, STATS_underrun,
+    STATS_NUM_FIELDS,
+};
+
+static const uint16_t motion_stats_field_qstrs[STATS_NUM_FIELDS] = {
+    MP_QSTR_updates, MP_QSTR_steps, MP_QSTR_seg_completed, MP_QSTR_slips, MP_QSTR_slip_ticks,
+    MP_QSTR_max_late, MP_QSTR_floor_hits, MP_QSTR_queue_high_water,
+    MP_QSTR_clamp_v, MP_QSTR_clamp_a, MP_QSTR_corner_violations, MP_QSTR_errors,
+    MP_QSTR_slip, MP_QSTR_floor_hit, MP_QSTR_clamp_v_flag, MP_QSTR_clamp_a_flag,
+    MP_QSTR_corner_violation, MP_QSTR_error, MP_QSTR_underrun,
+};
+
+typedef struct _motion_stats_obj_t {
+    mp_obj_base_t base;
+    mp_obj_t items[STATS_NUM_FIELDS];
+} motion_stats_obj_t;
+
+static const mp_obj_type_t motion_stats_type;
+
+static mp_obj_t motion_stats_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+    mp_arg_check_num(n_args, n_kw, 0, 0, false);
+    motion_stats_obj_t *self = mp_obj_malloc(motion_stats_obj_t, type);
+    for (size_t i = 0; i < STATS_slip; i++) {
+        self->items[i] = MP_OBJ_NEW_SMALL_INT(0);
+    }
+    for (size_t i = STATS_slip; i < STATS_NUM_FIELDS; i++) {
+        self->items[i] = mp_const_false;
+    }
+    return MP_OBJ_FROM_PTR(self);
+}
+
+static void motion_stats_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
+    motion_stats_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    for (size_t i = 0; i < STATS_NUM_FIELDS; i++) {
+        if (attr != motion_stats_field_qstrs[i]) {
+            continue;
+        }
+        if (dest[0] == MP_OBJ_NULL) {
+            dest[0] = self->items[i]; // load
+        } else if (dest[1] != MP_OBJ_NULL) {
+            self->items[i] = dest[1]; // store
+            dest[0] = MP_OBJ_NULL; // signal success
+        }
+        return;
+    }
+    dest[1] = MP_OBJ_SENTINEL; // not ours; fall back to locals_dict
+}
+
+// Reuses motion_stats_field_qstrs for the labels instead of a second literal
+// per field, so this doesn't duplicate the field names' text in flash.
+static void motion_stats_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+    motion_stats_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_printf(print, "Stats(");
+    for (size_t i = 0; i < STATS_NUM_FIELDS; i++) {
+        mp_printf(print, "%s%s=", i ? ", " : "", qstr_str(motion_stats_field_qstrs[i]));
+        mp_obj_print_helper(print, self->items[i], PRINT_REPR);
+    }
+    mp_printf(print, ")");
+}
+
+static MP_DEFINE_CONST_OBJ_TYPE(
+    motion_stats_type,
+    MP_QSTR_Stats,
+    MP_TYPE_FLAG_NONE,
+    make_new, motion_stats_make_new,
+    print, motion_stats_print,
+    attr, &motion_stats_attr
+    );
+
+static void motion_stats_fill(motion_stats_obj_t *self, const moco_stats *c_stats) {
+    self->items[STATS_updates] = mp_obj_new_int_from_uint(c_stats->updates);
+    self->items[STATS_steps] = mp_obj_new_int_from_uint(c_stats->steps);
+    self->items[STATS_seg_completed] = mp_obj_new_int_from_uint(c_stats->seg_completed);
+    self->items[STATS_slips] = mp_obj_new_int_from_uint(c_stats->slips);
+    self->items[STATS_slip_ticks] = mp_obj_new_int_from_uint(c_stats->slip_ticks);
+    self->items[STATS_max_late] = mp_obj_new_int_from_uint(c_stats->max_late);
+    self->items[STATS_floor_hits] = mp_obj_new_int_from_uint(c_stats->floor_hits);
+    self->items[STATS_queue_high_water] = mp_obj_new_int_from_uint(c_stats->queue_high_water);
+    self->items[STATS_clamp_v] = mp_obj_new_int_from_uint(c_stats->clamp_v);
+    self->items[STATS_clamp_a] = mp_obj_new_int_from_uint(c_stats->clamp_a);
+    self->items[STATS_corner_violations] = mp_obj_new_int_from_uint(c_stats->corner_violations);
+    self->items[STATS_errors] = mp_obj_new_int_from_uint(c_stats->errors);
+    self->items[STATS_slip] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_SLIP);
+    self->items[STATS_floor_hit] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_FLOOR_HIT);
+    self->items[STATS_clamp_v_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CLAMP_V);
+    self->items[STATS_clamp_a_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CLAMP_A);
+    self->items[STATS_corner_violation] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CORNER);
+    self->items[STATS_error] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_ERROR);
+    self->items[STATS_underrun] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_UNDERRUN);
+}
+
+/******************************************************************************/
 // Shared hardware timer. One TIM24 interrupt drives every active Rig's
 // moco_rig_update() -- enabled when the first Rig initializes, disabled when
 // the last one deinitializes (motion_rig_make_new()/motion_rig_deinit() below).
@@ -715,6 +816,23 @@ static mp_obj_t motion_rig_get_queue_free(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_queue_free_obj, motion_rig_get_queue_free);
 
+static mp_obj_t motion_rig_get_stats(mp_obj_t self_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    motion_rig_ensure_initialized(self);
+    motion_stats_obj_t *result = mp_obj_malloc(motion_stats_obj_t, &motion_stats_type);
+    motion_stats_fill(result, moco_rig_stats(self->rig));
+    return MP_OBJ_FROM_PTR(result);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_stats_obj, motion_rig_get_stats);
+
+static mp_obj_t motion_rig_clear_stats(mp_obj_t self_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    motion_rig_ensure_initialized(self);
+    moco_rig_clear_stats(self->rig);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_clear_stats_obj, motion_rig_clear_stats);
+
 static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&motion_rig_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&motion_rig_deinit_obj) },
@@ -729,6 +847,8 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_get_position), MP_ROM_PTR(&motion_rig_get_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_velocity), MP_ROM_PTR(&motion_rig_get_velocity_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_queue_free), MP_ROM_PTR(&motion_rig_get_queue_free_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_stats), MP_ROM_PTR(&motion_rig_get_stats_obj) },
+    { MP_ROM_QSTR(MP_QSTR_clear_stats), MP_ROM_PTR(&motion_rig_clear_stats_obj) },
  };
 static MP_DEFINE_CONST_DICT(motion_rig_locals_dict, motion_rig_locals_dict_table);
 
@@ -750,6 +870,7 @@ static const mp_rom_map_elem_t motion_module_globals_table[] = {
 
     { MP_ROM_QSTR(MP_QSTR_Rig), MP_ROM_PTR(&motion_rig_type) },
     { MP_ROM_QSTR(MP_QSTR_SegResult), MP_ROM_PTR(&motion_segresult_type) },
+    { MP_ROM_QSTR(MP_QSTR_Stats), MP_ROM_PTR(&motion_stats_type) },
 
     { MP_ROM_QSTR(MP_QSTR_Error), MP_ROM_PTR(&mp_type_MotionError) },
     { MP_ROM_QSTR(MP_QSTR_QueueFull), MP_ROM_PTR(&mp_type_MotionQueueFull) },
