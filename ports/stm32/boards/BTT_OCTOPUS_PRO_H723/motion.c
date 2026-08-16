@@ -33,12 +33,12 @@
 #include "pin.h"
 #include "micromoco.h"
 
-#define MOTION_CLOCK_HZ (1000000)
+#define MOTION_CLOCK_HZ (5000000)
 
 // Matches the driver-timing default moco_rig_init() seeds internally
 // (moco_design.md §5.1); kept in sync by hand since the C layer doesn't
 // expose it as a symbol.
-#define MOTION_DEFAULT_TIMING_US ((moco_float)5)
+#define MOTION_DEFAULT_TIMING_US ((moco_float)2)
 
 // Seeded once per channel at construction, in raw steps (unit_scale is still
 // 1.0 at that point), so a freshly built Rig can move without an explicit
@@ -254,32 +254,65 @@ static void motion_stats_fill(motion_stats_obj_t *self, const moco_stats *c_stat
 // Shared hardware timer. One TIM24 interrupt drives every active Rig's
 // moco_rig_update() -- enabled when the first Rig initializes, disabled when
 // the last one deinitializes (motion_rig_make_new()/motion_rig_deinit() below).
+//
+// CNT free-runs continuously at MOTION_CLOCK_HZ and is never reset; `now` for
+// moco_rig_update() is always TIM24->CNT directly. The timer wakes on a CC1
+// compare match programmed to the minimum of every active Rig's returned
+// deadline (moco_design.md §7/§18), not a fixed period -- silent while idle,
+// only fires when something is actually due.
 
 static int motion_timer_refcount;
-static uint32_t motion_tick;
 
 void motion_init(void) {
     motion_active_rigs_head = 0;
     motion_timer_refcount = 0;
-    motion_tick = 0;
 }
 
 // TIM24 is unused by MicroPython elsewhere on this MCU, so it's free to
-// drive directly. Toggling PE15 each tick gives a square wave on the pin,
-// to watch the interrupt's actual timing on a logic analyzer during
-// bring-up; kept until it's no longer needed for that purpose.
-void TIM24_IRQHandler(void) {
+// drive directly. Toggling PE15 gives a square wave on the pin, to watch the
+// interrupt's actual timing on a logic analyzer during bring-up; kept until
+// it's no longer needed for that purpose.
+static void motion_timer_service(void) {
     pin_E15->gpio->BSRR = pin_E15->pin_mask;
-    TIM24->SR = ~TIM_SR_UIF;
 
-    uint32_t now = ++motion_tick;
+    uint32_t now = TIM24->CNT;
+    uint32_t min_deadline = 0;
+    bool any = false;
     for (motion_rig_obj_t *self = motion_rig_ptr(motion_active_rigs_head); self; self = motion_rig_ptr(self->next_handle)) {
         if (self->rig) {
-            moco_rig_update(self->rig, now);
+            uint32_t deadline = moco_rig_update(self->rig, now);
+            if (!any || (int32_t)(deadline - min_deadline) < 0) {
+                min_deadline = deadline;
+                any = true;
+            }
+        }
+    }
+    if (any) {
+        TIM24->CCR1 = min_deadline;
+        if ((int32_t)(TIM24->CNT - min_deadline) >= 0) {
+            // Already passed by the time we finished computing it -- force
+            // immediate re-entry rather than waiting ~71 min (at 1MHz) for
+            // CNT to wrap all the way around to min_deadline again.
+            TIM24->EGR = TIM_EGR_CC1G;
         }
     }
 
     pin_E15->gpio->BSRR = pin_E15->pin_mask << 16;
+}
+
+void TIM24_IRQHandler(void) {
+    TIM24->SR = ~TIM_SR_CC1IF;
+    motion_timer_service();
+}
+
+// Forces prompt re-evaluation after go()/move()/segment()/dwell() may have
+// started motion the currently-armed deadline doesn't know about yet (a
+// freshly-idle Rig's own deadline can be ~18 minutes out by default). Never
+// calls moco_rig_update() itself -- only the ISR does, matching its "call
+// from exactly one context" contract -- this just makes that context run
+// again promptly.
+static void motion_timer_kick(void) {
+    TIM24->EGR = TIM_EGR_CC1G;
 }
 
 static void motion_timer_enable(void) {
@@ -295,22 +328,20 @@ static void motion_timer_enable(void) {
 
     __HAL_RCC_TIM24_CLK_ENABLE();
 
-    // Run the counter at its full source rate and use ARR to set the
-    // MOTION_CLOCK_HZ update period, rather than prescaling down and using
-    // ARR=0 -- with ARR=0 the counter reloads every clock edge and never
-    // holds a nonzero value, so CNT is useless as a liveness check. `now`
-    // for moco_rig_update() comes from motion_tick above, not CNT: CNT
-    // free-runs at the source clock and wraps every ARR ticks, so it isn't
-    // itself a MOTION_CLOCK_HZ-rate counter.
-    TIM24->PSC = 0;
-    TIM24->ARR = (timer_get_source_freq(24) / MOTION_CLOCK_HZ) - 1;
+    // CNT free-runs at MOTION_CLOCK_HZ across the full 32-bit range; ARR is
+    // never meant to be reached (natural overflow is just wraparound, not
+    // something we interrupt on -- DIER only enables the CC1 compare match).
+    TIM24->PSC = (timer_get_source_freq(24) / MOTION_CLOCK_HZ) - 1;
+    TIM24->ARR = 0xFFFFFFFF;
     TIM24->EGR = TIM_EGR_UG; // load PSC/ARR, reset CNT
-    TIM24->SR = ~TIM_SR_UIF; // clear UIF set by the forced update above
-    TIM24->DIER = TIM_DIER_UIE;
+    TIM24->SR = 0; // clear flags set by the forced update above
+    TIM24->DIER = TIM_DIER_CC1IE;
     TIM24->CR1 = TIM_CR1_CEN;
 
     NVIC_SetPriority(TIM24_IRQn, NVIC_EncodePriority(NVIC_PRIORITYGROUP_4, 2, 0));
     HAL_NVIC_EnableIRQ(TIM24_IRQn);
+
+    motion_timer_kick(); // establish the real first deadline via a service pass
 }
 
 static void motion_timer_disable(void) {
@@ -320,6 +351,7 @@ static void motion_timer_disable(void) {
     }
 
     HAL_NVIC_DisableIRQ(TIM24_IRQn);
+    NVIC_ClearPendingIRQ(TIM24_IRQn);
     TIM24->CR1 = 0;
     TIM24->DIER = 0;
     __HAL_RCC_TIM24_CLK_DISABLE();
@@ -486,6 +518,7 @@ static mp_obj_t motion_rig_go(mp_obj_t self_in) {
     if (status != MOCO_OK) {
         mp_raise_msg(&mp_type_MotionError, MP_ERROR_TEXT("Rig configuration is invalid"));
     }
+    motion_timer_kick();
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_go_obj, motion_rig_go);
@@ -710,6 +743,7 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     for (mp_int_t i = 0; i < self->n_channels; i++) {
         self->last_target[i] = target[i];
     }
+    motion_timer_kick();
 
     return motion_queue_return(self, args[ARG_result].u_obj, &c_result);
 }
@@ -738,6 +772,7 @@ static mp_obj_t motion_rig_segment(size_t n_args, const mp_obj_t *pos_args, mp_m
     for (mp_int_t i = 0; i < self->n_channels; i++) {
         self->last_target[i] = target[i];
     }
+    motion_timer_kick();
 
     return motion_queue_return(self, args[ARG_result].u_obj, &c_result);
 }
@@ -760,6 +795,7 @@ static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map
 
     moco_seg_result c_result;
     motion_check_status(moco_rig_queue_dwell(self->rig, duration_s, flags, &c_result));
+    motion_timer_kick();
 
     return motion_queue_return(self, args[ARG_result].u_obj, &c_result);
 }
