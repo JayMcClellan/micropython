@@ -677,6 +677,20 @@ static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_rates_obj, 1, motion_rig_rates);
 
+static mp_obj_t motion_rig_reset_position(mp_obj_t self_in, mp_obj_t channel_in, mp_obj_t position_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    motion_rig_ensure_initialized(self);
+    mp_int_t channel = mp_obj_get_int(channel_in);
+    motion_channel_check(self, channel);
+    moco_float position = mp_obj_get_float_to_f(position_in);
+    motion_check_status(moco_channel_set_position(self->rig, channel, position));
+    moco_float pos[MOCO_MAX_CHANNELS];
+    moco_rig_position(self->rig, pos);
+    self->last_target[channel] = pos[channel];
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(motion_rig_reset_position_obj, motion_rig_reset_position);
+
 // Parses target (a list/tuple of per-channel values, entries may be None or
 // omitted) into a full n_channels-length array, filling forward from
 // self->last_target for every omitted or None entry.
@@ -719,10 +733,11 @@ static mp_obj_t motion_queue_return(motion_rig_obj_t *self, mp_obj_t result_obj,
 }
 
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_target, ARG_v_cruise, ARG_result, ARG_go };
+    enum { ARG_target, ARG_v_cruise, ARG_v_end, ARG_result, ARG_go };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_target,   MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_v_cruise, MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_v_end,    MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_result,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_go,       MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
     };
@@ -734,10 +749,11 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     moco_float target[MOCO_MAX_CHANNELS];
     motion_parse_target(self, args[ARG_target].u_obj, target);
     moco_float v_cruise = motion_get_float_or(args[ARG_v_cruise].u_obj, (moco_float)0);
+    moco_float v_end = motion_get_float_or(args[ARG_v_end].u_obj, (moco_float)0);
     moco_queue_flags flags = args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT;
 
     moco_seg_result c_result;
-    motion_check_status(moco_rig_queue_move(self->rig, target, v_cruise, flags, &c_result));
+    motion_check_status(moco_rig_queue_move(self->rig, target, v_cruise, v_end, flags, &c_result));
     for (mp_int_t i = 0; i < self->n_channels; i++) {
         self->last_target[i] = target[i];
     }
@@ -775,6 +791,59 @@ static mp_obj_t motion_rig_segment(size_t n_args, const mp_obj_t *pos_args, mp_m
     return motion_queue_return(self, args[ARG_result].u_obj, &c_result);
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_segment_obj, 1, motion_rig_segment);
+
+// jog()'s roll-ahead distance: far enough to rarely need re-issuing,
+// comfortably below moco_float's ~8.4e6-step single-precision ceiling
+// (moco_design.md SS6.4). Recomputed from the queue-end position on every
+// call rather than compounded, so it can't walk toward an extreme value.
+#define MOTION_JOG_ROLL_AHEAD_STEPS ((moco_float)1000000)
+
+static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_channel, ARG_velocity, ARG_result, ARG_go };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_channel,  MP_ARG_REQUIRED | MP_ARG_INT },
+        { MP_QSTR_velocity, MP_ARG_REQUIRED | MP_ARG_OBJ },
+        { MP_QSTR_result,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_go,       MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
+    };
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    motion_rig_ensure_initialized(self);
+    mp_int_t channel = args[ARG_channel].u_int;
+    motion_channel_check(self, channel);
+    moco_float velocity = mp_obj_get_float_to_f(args[ARG_velocity].u_obj);
+    if (velocity == (moco_float)0) {
+        mp_raise_ValueError(MP_ERROR_TEXT("velocity must be nonzero"));
+    }
+
+    moco_float unit_scale;
+    moco_channel_get_scale(self->rig, channel, &unit_scale, NULL);
+    moco_float roll_ahead = MOTION_JOG_ROLL_AHEAD_STEPS * unit_scale;
+
+    moco_float target[MOCO_MAX_CHANNELS];
+    for (mp_int_t i = 0; i < self->n_channels; i++) {
+        target[i] = self->last_target[i];
+    }
+    target[channel] += (velocity > 0) ? roll_ahead : -roll_ahead;
+    moco_float speed = (velocity > 0) ? velocity : -velocity;
+    moco_queue_flags flags = args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT;
+
+    // A single queue_seg() here would solve one constant acceleration over the
+    // *entire* roll-ahead distance -- with roll_ahead this large, that acceleration
+    // rounds down to near nothing regardless of the channel's configured amax, since
+    // amax only clamps an already-computed value rather than setting the ramp rate
+    // directly. queue_move() with v_end == v_cruise ramps to speed at amax first, then
+    // holds it for the rest of the distance.
+    moco_seg_result c_result;
+    motion_check_status(moco_rig_queue_move(self->rig, target, speed, speed, flags, &c_result));
+    self->last_target[channel] = target[channel];
+    motion_timer_kick();
+
+    return motion_queue_return(self, args[ARG_result].u_obj, &c_result);
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_jog_obj, 1, motion_rig_jog);
 
 static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_duration_s, ARG_result, ARG_go };
@@ -889,8 +958,10 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_stepper), MP_ROM_PTR(&motion_rig_stepper_obj) },
     { MP_ROM_QSTR(MP_QSTR_scale), MP_ROM_PTR(&motion_rig_scale_obj) },
     { MP_ROM_QSTR(MP_QSTR_rates), MP_ROM_PTR(&motion_rig_rates_obj) },
+    { MP_ROM_QSTR(MP_QSTR_reset_position), MP_ROM_PTR(&motion_rig_reset_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_move), MP_ROM_PTR(&motion_rig_move_obj) },
     { MP_ROM_QSTR(MP_QSTR_segment), MP_ROM_PTR(&motion_rig_segment_obj) },
+    { MP_ROM_QSTR(MP_QSTR_jog), MP_ROM_PTR(&motion_rig_jog_obj) },
     { MP_ROM_QSTR(MP_QSTR_dwell), MP_ROM_PTR(&motion_rig_dwell_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_position), MP_ROM_PTR(&motion_rig_get_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_velocity), MP_ROM_PTR(&motion_rig_get_velocity_obj) },
