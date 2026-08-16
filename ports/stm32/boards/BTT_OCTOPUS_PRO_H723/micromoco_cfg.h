@@ -1,14 +1,15 @@
-/* micromoco_cfg.h - stub configuration for the BTT_OCTOPUS_PRO_H723 board.
+/* micromoco_cfg.h - configuration for the BTT_OCTOPUS_PRO_H723 board.
  *
- * All event functions are no-ops for now, just to get micromoco building and
- * linking into the firmware. Real GPIO output and critical-section handling
- * come later.
+ * Channel events are direct GPIO register writes. Critical sections use
+ * real PRIMASK save/restore.
  */
 
 #ifndef MICROMOCO_CFG_H
 #define MICROMOCO_CFG_H
 
 #include <math.h>
+
+#include "py/mphal.h" // pulls in mp_uint_t, CMSIS intrinsics, and irq.h
 
 typedef float moco_float;
 
@@ -29,21 +30,27 @@ static inline float moco_hw_sqrtf(float x) {
 }
 #define MOCO_SQRTF(x) moco_hw_sqrtf(x)
 
-typedef double moco_mem;
+typedef float moco_mem;
 
-typedef void *moco_channel_data;
+typedef struct {
+    pin_gpio_t *step_gpio;
+    uint16_t step_mask;
+    pin_gpio_t *dir_gpio;
+    uint16_t dir_mask;
+} moco_channel_data;
 
-static inline void moco_on_dir_change(moco_channel_data *data, int dir) {
-    (void)data; (void)dir;
+static inline void moco_on_pos_change(moco_channel_data *d, int steps) {
+    (void)steps;
+    d->step_gpio->BSRR = d->step_mask;
 }
-static inline void moco_on_pos_change(moco_channel_data *data, int steps) {
-    (void)data; (void)steps;
+static inline void moco_on_pos_done(moco_channel_data *d) {
+    d->step_gpio->BSRR = (uint32_t)d->step_mask << 16;
 }
-static inline void moco_on_pos_done(moco_channel_data *data) {
-    (void)data;
+static inline void moco_on_dir_change(moco_channel_data *d, int dir) {
+    d->dir_gpio->BSRR = dir > 0 ? d->dir_mask : (uint32_t)d->dir_mask << 16;
 }
 
-#define MOCO_ENTER_CRITICAL() ((void)0)
-#define MOCO_EXIT_CRITICAL()  ((void)0)
+#define MOCO_ENTER_CRITICAL() mp_uint_t _moco_irq_state = disable_irq()
+#define MOCO_EXIT_CRITICAL()  enable_irq(_moco_irq_state)
 
 #endif // MICROMOCO_CFG_H
