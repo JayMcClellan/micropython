@@ -503,8 +503,6 @@ static void motion_rig_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
         dest[0] = MP_OBJ_NEW_SMALL_INT(self->n_segs);
     } else if (attr == MP_QSTR_initialized) {
         dest[0] = mp_obj_new_bool(self->rig != NULL);
-    } else if (attr == MP_QSTR_running) {
-        dest[0] = mp_obj_new_bool(self->rig != NULL && moco_rig_is_running(self->rig));
     } else {
         // Not one of our special attributes; fall back to locals_dict
         dest[1] = MP_OBJ_SENTINEL;
@@ -852,6 +850,20 @@ static mp_obj_t motion_rig_get_queue_free(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_queue_free_obj, motion_rig_get_queue_free);
 
+static mp_obj_t motion_rig_is_running(mp_obj_t self_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    motion_rig_ensure_initialized(self);
+    return mp_obj_new_bool(moco_rig_is_running(self->rig));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_is_running_obj, motion_rig_is_running);
+
+static mp_obj_t motion_rig_is_moving(mp_obj_t self_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    motion_rig_ensure_initialized(self);
+    return mp_obj_new_int_from_uint(moco_rig_is_moving(self->rig));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_is_moving_obj, motion_rig_is_moving);
+
 static mp_obj_t motion_rig_get_stats(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
     motion_rig_ensure_initialized(self);
@@ -883,6 +895,8 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_get_position), MP_ROM_PTR(&motion_rig_get_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_velocity), MP_ROM_PTR(&motion_rig_get_velocity_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_queue_free), MP_ROM_PTR(&motion_rig_get_queue_free_obj) },
+    { MP_ROM_QSTR(MP_QSTR_is_running), MP_ROM_PTR(&motion_rig_is_running_obj) },
+    { MP_ROM_QSTR(MP_QSTR_is_moving), MP_ROM_PTR(&motion_rig_is_moving_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_stats), MP_ROM_PTR(&motion_rig_get_stats_obj) },
     { MP_ROM_QSTR(MP_QSTR_clear_stats), MP_ROM_PTR(&motion_rig_clear_stats_obj) },
  };
