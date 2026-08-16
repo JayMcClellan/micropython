@@ -33,11 +33,7 @@
 #include "pin.h"
 #include "micromoco.h"
 
-// 100kHz for now, deliberately coarser than ideal for real pulse timing --
-// easier to reason about while bringing up the timer/ISR plumbing itself.
-// A faster rate (2MHz is the likely eventual choice for this board) is a
-// later, board-specific tuning decision, not something to solve here.
-#define MOTION_CLOCK_HZ (100000)
+#define MOTION_CLOCK_HZ (1000000)
 
 // Matches the driver-timing default moco_rig_init() seeds internally
 // (moco_design.md §5.1); kept in sync by hand since the C layer doesn't
