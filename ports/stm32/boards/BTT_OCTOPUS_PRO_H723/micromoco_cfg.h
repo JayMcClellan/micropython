@@ -33,21 +33,29 @@ static inline float moco_hw_sqrtf(float x) {
 typedef float moco_mem;
 
 typedef struct {
-    pin_gpio_t *step_gpio;
-    uint16_t step_mask;
-    pin_gpio_t *dir_gpio;
-    uint16_t dir_mask;
+    uint32_t *on_addr;
+    uint32_t on_val;
+    uint32_t *off_addr;
+    uint32_t off_val;
+} moco_pin;
+
+typedef struct {
+   moco_pin step;
+   moco_pin dir;
 } moco_channel_data;
 
 static inline void moco_on_pos_change(moco_channel_data *d, int steps) {
     (void)steps;
-    d->step_gpio->BSRR = d->step_mask;
+    *d->step.on_addr = d->step.on_val;
 }
 static inline void moco_on_pos_done(moco_channel_data *d) {
-    d->step_gpio->BSRR = (uint32_t)d->step_mask << 16;
+    *d->step.off_addr = d->step.off_val;
 }
 static inline void moco_on_dir_change(moco_channel_data *d, int dir) {
-    d->dir_gpio->BSRR = dir > 0 ? d->dir_mask : (uint32_t)d->dir_mask << 16;
+    if (dir > 0)
+        *d->dir.on_addr = d->dir.on_val;
+    else
+        *d->dir.off_addr = d->dir.off_val;
 }
 
 #define MOCO_ENTER_CRITICAL() mp_uint_t _moco_irq_state = disable_irq()

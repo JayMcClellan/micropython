@@ -533,6 +533,45 @@ static mp_obj_t motion_rig_stop(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_stop_obj, motion_rig_stop);
 
+// Resolves a stepper() pin argument, which is either a plain machine.Pin (active-high) or a
+// (Pin, active_hi) 2-tuple/list -- a lightweight, no-object-of-its-own equivalent of
+// machine.Signal's invert flag, chosen over a separate step_hi=/dir_hi= kwarg pair because
+// the application builds these up as lists of (pin, polarity) per axis; passing each entry
+// straight through as the pin argument avoids unzipping that list into parallel pin/polarity
+// arguments at every call site.
+static void motion_parse_pin_arg(mp_obj_t obj, const machine_pin_obj_t **pin_out, bool *active_hi_out) {
+    if (mp_obj_is_type(obj, &mp_type_tuple) || mp_obj_is_type(obj, &mp_type_list)) {
+        size_t len;
+        mp_obj_t *items;
+        mp_obj_get_array(obj, &len, &items);
+        if (len != 2) {
+            mp_raise_ValueError(MP_ERROR_TEXT("pin must be a Pin or a (pin, active_hi) pair"));
+        }
+        *pin_out = pin_find(items[0]);
+        *active_hi_out = mp_obj_is_true(items[1]);
+    } else {
+        *pin_out = pin_find(obj);
+        *active_hi_out = true;
+    }
+}
+
+// Builds one moco_pin from a resolved machine.Pin + polarity -- both on_addr/off_addr point
+// at the same BSRR register on this MCU (a single register does both set and reset, at
+// different bit positions), unlike a port where "on" and "off" might be genuinely separate
+// registers. active_hi=False (an active-low driver input) swaps which BSRR write is "on" vs
+// "off" rather than swapping addresses -- moco_on_pos_change()/moco_on_dir_change() (§4.1)
+// always mean "assert"/"deassert", not "drive high"/"drive low", so this is the one place
+// that distinction gets resolved into actual register writes.
+static moco_pin motion_make_pin(const machine_pin_obj_t *pin, bool active_hi) {
+    uint32_t *bsrr = (uint32_t *)&pin->gpio->BSRR;
+    uint32_t set_val = pin->pin_mask;
+    uint32_t reset_val = (uint32_t)pin->pin_mask << 16;
+    if (active_hi) {
+        return (moco_pin){ .on_addr = bsrr, .on_val = set_val, .off_addr = bsrr, .off_val = reset_val };
+    }
+    return (moco_pin){ .on_addr = bsrr, .on_val = reset_val, .off_addr = bsrr, .off_val = set_val };
+}
+
 static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum {
         ARG_channel, ARG_step_pin, ARG_dir_pin, ARG_rotation_distance,
@@ -570,13 +609,17 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
     moco_float dir_hold_us = motion_get_float_or(args[ARG_dir_hold_us].u_obj, MOTION_DEFAULT_TIMING_US);
     motion_check_status(moco_channel_set_timing(self->rig, channel, pulse_us, low_min_us, dir_setup_us, dir_hold_us));
 
-    const machine_pin_obj_t *step_pin = pin_find(args[ARG_step_pin].u_obj);
-    const machine_pin_obj_t *dir_pin = pin_find(args[ARG_dir_pin].u_obj);
+    const machine_pin_obj_t *step_pin;
+    bool step_hi;
+    motion_parse_pin_arg(args[ARG_step_pin].u_obj, &step_pin, &step_hi);
+    const machine_pin_obj_t *dir_pin;
+    bool dir_hi;
+    motion_parse_pin_arg(args[ARG_dir_pin].u_obj, &dir_pin, &dir_hi);
     motion_ensure_output(step_pin);
     motion_ensure_output(dir_pin);
     *moco_channel_get_data(self->rig, channel) = (moco_channel_data){
-        .step_gpio = step_pin->gpio, .step_mask = step_pin->pin_mask,
-        .dir_gpio = dir_pin->gpio, .dir_mask = dir_pin->pin_mask,
+        .step = motion_make_pin(step_pin, step_hi),
+        .dir  = motion_make_pin(dir_pin, dir_hi),
     };
 
     if (args[ARG_rotation_distance].u_obj != mp_const_none) {
