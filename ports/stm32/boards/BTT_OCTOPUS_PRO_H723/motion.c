@@ -393,7 +393,9 @@ static void motion_check_status(moco_status status) {
     if (status == MOCO_ERR_FULL) {
         mp_raise_msg(&mp_type_MotionQueueFull, MP_ERROR_TEXT("No free queue slot"));
     }
-    mp_raise_msg(&mp_type_MotionError, MP_ERROR_TEXT("Rejected by the rig"));
+    // DEGENERATE/INFEASIBLE/CONFIG all land here -- the status code (see micromoco.h's
+    // MOCO_ERR_* defines) is included since the message alone can't distinguish them.
+    mp_raise_msg_varg(&mp_type_MotionError, MP_ERROR_TEXT("Rejected by the rig (status=%d)"), (int)status);
 }
 
 static void motion_rig_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
