@@ -744,6 +744,18 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_move_obj, 1, motion_rig_move);
 // call rather than compounded, so it can't walk toward an extreme value.
 #define MOTION_JOG_ROLL_AHEAD_STEPS ((moco_float)1000000)
 
+// ...and capped in TIME as well, because a fixed step count is not a bounded
+// span: at a slow jog speed a million steps is hours of cruise, far past the
+// 2^30-tick limit every span has to stay under (moco_design.md SS16), and the
+// move is rejected (or, before that limit was enforced, silently collapsed a
+// fraction of the way in -- the "slow jog moves a little then stops" bug).
+// Well inside the limit at any clock this port runs: 60 s is 3e8 ticks at
+// 5 MHz against a 1.07e9 ceiling. Costs nothing at normal jog speeds, where
+// the step count is the binding cap anyway, and only means the caller's
+// re-issue (motion_coord.py schedules it at half the returned duration) comes
+// around every 30 s instead of less often.
+#define MOTION_JOG_MAX_SPAN_S ((moco_float)60)
+
 static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_channel, ARG_velocity, ARG_go };
     static const mp_arg_t allowed_args[] = {
@@ -764,14 +776,18 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
 
     moco_float unit_scale;
     moco_channel_get_scale(&self->rig, channel, &unit_scale, NULL);
+    moco_float speed = (velocity > 0) ? velocity : -velocity;
     moco_float roll_ahead = MOTION_JOG_ROLL_AHEAD_STEPS * unit_scale;
+    moco_float span_limit = speed * MOTION_JOG_MAX_SPAN_S;
+    if (span_limit < roll_ahead) {
+        roll_ahead = span_limit;
+    }
 
     moco_float target[MOCO_MAX_CHANNELS];
     for (mp_int_t i = 0; i < self->n_channels; i++) {
         target[i] = self->last_target[i];
     }
     target[channel] += (velocity > 0) ? roll_ahead : -roll_ahead;
-    moco_float speed = (velocity > 0) ? velocity : -velocity;
     moco_queue_flags flags = args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT;
 
     // A self-committed moco_rig_move() always ends at rest, but with
