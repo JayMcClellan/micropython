@@ -30,7 +30,20 @@ static inline float moco_hw_sqrtf(float x) {
 }
 #define MOCO_SQRTF(x) moco_hw_sqrtf(x)
 
-typedef float moco_mem;
+// Allocation for moco_rig_init()'s three blocks. m_malloc_maybe(), not
+// m_malloc(): the latter raises MemoryError via nlr_jump on failure, which
+// would unwind straight past moco_rig_init()'s own cleanup and strand any
+// block it had already taken. Returning NULL lets it unwind properly and
+// report MOCO_ERR_NO_MEM, which motion.c turns back into a MemoryError.
+// The blocks live on the GC heap and are only ever referenced from the
+// moco_rig embedded in motion_rig_obj_t, itself a GC-scanned object, so the
+// collector traces them for as long as the Rig is alive.
+static inline void *moco_alloc(size_t num_bytes) {
+    return m_malloc_maybe(num_bytes);
+}
+static inline void moco_free(void *ptr) {
+    m_free(ptr);
+}
 
 typedef struct {
     uint32_t *on_addr;

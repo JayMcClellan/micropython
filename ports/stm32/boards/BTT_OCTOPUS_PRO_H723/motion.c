@@ -53,8 +53,11 @@
 typedef struct _motion_rig_obj_t {
     mp_obj_base_t base;
     mp_int_t n_channels, q_depth;
-    size_t mem_size;
-    moco_rig *rig; // == mem once successfully initialized, else NULL
+    // Embedded by value, not a pointer: moco_rig_init() allocates the three
+    // variable-sized arrays behind it, and moco_rig_initialized(&self->rig)
+    // is the initialized flag. Living inside this GC-scanned object is also
+    // what keeps those three blocks traced.
+    moco_rig rig;
     intptr_t next_handle; // Next node in active rig list
     uint32_t vjump_explicit_mask; // bit per channel: vjump ever set via rates()
     // Per-channel queue-end target, for move()/segment()'s target= fill-forward.
@@ -214,8 +217,8 @@ static void motion_timer_service(void) {
     uint32_t min_deadline = 0;
     bool any = false;
     for (motion_rig_obj_t *self = motion_rig_ptr(motion_active_rigs_head); self; self = motion_rig_ptr(self->next_handle)) {
-        if (self->rig) {
-            uint32_t deadline = moco_rig_update(self->rig, now);
+        if (moco_rig_initialized(&self->rig)) {
+            uint32_t deadline = moco_rig_update(&self->rig, now);
             if (!any || (int32_t)(deadline - min_deadline) < 0) {
                 min_deadline = deadline;
                 any = true;
@@ -292,13 +295,19 @@ static void motion_timer_disable(void) {
     __HAL_RCC_TIM24_CLK_DISABLE();
 }
 
+// Most methods need no explicit initialized check: every moco_* call already
+// reports MOCO_ERR_CONFIG on a torn-down rig, which motion_check_status()
+// turns into a MotionError. This exists for the few whose own binding-level
+// work runs first and would otherwise misreport (a channel range of 0..-1) or
+// read a buffer moco_rig_position() declined to fill.
 static void motion_rig_ensure_initialized(motion_rig_obj_t *self) {
-    if (!self->rig) {
+    if (!moco_rig_initialized(&self->rig)) {
         mp_raise_msg(&mp_type_MotionError, MP_ERROR_TEXT("Rig is not initialized"));
     }
 }
 
 static void motion_channel_check(motion_rig_obj_t *self, mp_int_t channel) {
+    motion_rig_ensure_initialized(self);
     if (!(0 <= channel && channel < self->n_channels)) {
         mp_raise_msg_varg(&mp_type_IndexError, MP_ERROR_TEXT("channel must be 0 to %d, got %d"), (int)self->n_channels - 1, (int)channel);
     }
@@ -335,7 +344,7 @@ static void motion_check_status(moco_status status) {
 
 static void motion_rig_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    mp_printf(print, "Rig(n_channels=%u, q_depth=%u, mem_size=%u)", self->n_channels, self->q_depth, self->mem_size);
+    mp_printf(print, "Rig(n_channels=%u, q_depth=%u)", self->n_channels, self->q_depth);
 }
 
 static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args) {
@@ -360,30 +369,35 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
 
     // Everything above is fallible and raises before anything is allocated,
     // so there's never a half-constructed Rig floating around to clean up.
-    const size_t mem_size = MOCO_RIG_SIZE(n_channels, q_depth);
-    moco_rig *rig = (moco_rig *)m_malloc(mem_size); // Throws on failure
+    // The object comes first now that the rig lives inside it; moco_rig_init()
+    // frees its own partial allocations on failure, leaving only the object
+    // itself for the GC to reclaim.
+    motion_rig_obj_t *self = mp_obj_malloc_with_finaliser(motion_rig_obj_t, &motion_rig_type);
+    // Everything the finaliser might touch is set before the one fallible
+    // call below, since mp_obj_malloc() hands back dirty memory and a raise
+    // from here on still leaves this object for the GC to finalise.
+    self->next_handle = 0;
+    self->rig = (moco_rig){0};
+    self->n_channels = 0;
+    self->q_depth = 0;
+    self->vjump_explicit_mask = 0;
 
-    moco_status status = moco_rig_init(rig, mem_size, n_channels, q_depth, MOTION_CLOCK_HZ);
+    moco_status status = moco_rig_init(&self->rig, n_channels, q_depth, MOTION_CLOCK_HZ);
+    if (status == MOCO_ERR_NO_MEM) {
+        mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("Out of memory"));
+    }
     if (status != MOCO_OK) {
-        m_free(rig);
         mp_raise_msg_varg(&mp_type_MotionError, MP_ERROR_TEXT("Initialization failed with n_channels=%d, q_depth=%d"), n_channels, q_depth);
     }
-    for (mp_int_t i = 0; i < n_channels; i++) {
-        moco_channel_set_limits(rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX, MOTION_DEFAULT_VMAX);
-    }
 
-    motion_rig_obj_t *self = mp_obj_malloc_with_finaliser(motion_rig_obj_t, &motion_rig_type);
-    self->mem_size = mem_size;
     self->n_channels = n_channels;
     self->q_depth = q_depth;
-    self->rig = rig;
-    self->vjump_explicit_mask = 0;
     for (mp_int_t i = 0; i < n_channels; i++) {
+        moco_channel_set_limits(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX, MOTION_DEFAULT_VMAX);
         self->last_target[i] = (moco_float)0;
     }
 
-    // Append self to the ISR scan list
-    self->next_handle = 0; // becomes the new tail
+    // Append self to the ISR scan list (next_handle already 0: the new tail)
     intptr_t *link = &motion_active_rigs_head;
     while (motion_rig_ptr(*link)) {
         link = &motion_rig_ptr(*link)->next_handle;
@@ -413,14 +427,13 @@ static mp_obj_t motion_rig_deinit(mp_obj_t self_in) {
         link = &motion_rig_ptr(*link)->next_handle;
     }
 
-    moco_rig *rig = self->rig;
-    if (rig) {
-        self->rig = NULL;
-        moco_rig_stop(rig);
-        m_free(rig);
+    // moco_rig_deinit() stops the rig, frees its three blocks and zeroes it,
+    // so moco_rig_initialized() reads false from here on and every moco_*
+    // call this object might still make returns a failure code.
+    if (moco_rig_initialized(&self->rig)) {
+        moco_rig_deinit(&self->rig);
         motion_timer_disable();
     }
-    self->mem_size = 0;
     self->n_channels = 0;
     self->q_depth = 0;
 
@@ -439,7 +452,7 @@ static void motion_rig_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
     } else if (attr == MP_QSTR_q_depth) {
         dest[0] = MP_OBJ_NEW_SMALL_INT(self->q_depth);
     } else if (attr == MP_QSTR_initialized) {
-        dest[0] = mp_obj_new_bool(self->rig != NULL);
+        dest[0] = mp_obj_new_bool(moco_rig_initialized(&self->rig));
     } else {
         // Not one of our special attributes; fall back to locals_dict
         dest[1] = MP_OBJ_SENTINEL;
@@ -448,8 +461,7 @@ static void motion_rig_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
 
 static mp_obj_t motion_rig_go(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
-    moco_status status = moco_rig_go(self->rig);
+    moco_status status = moco_rig_go(&self->rig);
     if (status != MOCO_OK) {
         mp_raise_msg(&mp_type_MotionError, MP_ERROR_TEXT("Rig configuration is invalid"));
     }
@@ -460,12 +472,11 @@ static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_go_obj, motion_rig_go);
 
 static mp_obj_t motion_rig_stop(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    if (self->rig) {
-        moco_rig_stop(self->rig);
-        // stop() truncates the queue back to the live position -- resync our
-        // shadow of each channel's queue-end target to match (see last_target).
-        moco_rig_position(self->rig, self->last_target);
-    }
+    // Both calls are no-ops on a deinitialized rig, so no guard is needed.
+    moco_rig_stop(&self->rig);
+    // stop() truncates the queue back to the live position -- resync our
+    // shadow of each channel's queue-end target to match (see last_target).
+    moco_rig_position(&self->rig, self->last_target);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_stop_obj, motion_rig_stop);
@@ -532,7 +543,6 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    motion_rig_ensure_initialized(self);
     mp_int_t channel = args[ARG_channel].u_int;
     motion_channel_check(self, channel);
 
@@ -544,7 +554,7 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
     moco_float low_min_us = motion_get_float_or(args[ARG_low_min_us].u_obj, MOTION_DEFAULT_TIMING_US);
     moco_float dir_setup_us = motion_get_float_or(args[ARG_dir_setup_us].u_obj, MOTION_DEFAULT_TIMING_US);
     moco_float dir_hold_us = motion_get_float_or(args[ARG_dir_hold_us].u_obj, MOTION_DEFAULT_TIMING_US);
-    motion_check_status(moco_channel_set_timing(self->rig, channel, pulse_us, low_min_us, dir_setup_us, dir_hold_us));
+    motion_check_status(moco_channel_set_timing(&self->rig, channel, pulse_us, low_min_us, dir_setup_us, dir_hold_us));
 
     const machine_pin_obj_t *step_pin;
     bool step_hi;
@@ -554,7 +564,7 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
     motion_parse_pin_arg(args[ARG_dir_pin].u_obj, &dir_pin, &dir_hi);
     motion_ensure_output(step_pin);
     motion_ensure_output(dir_pin);
-    *moco_channel_get_data(self->rig, channel) = (moco_channel_data){
+    *moco_channel_get_data(&self->rig, channel) = (moco_channel_data){
         .step = motion_make_pin(step_pin, step_hi),
         .dir  = motion_make_pin(dir_pin, dir_hi),
     };
@@ -568,7 +578,7 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
         moco_float rotation_distance = mp_obj_get_float_to_f(args[ARG_rotation_distance].u_obj);
         moco_float unit_scale = rotation_distance / (moco_float)(steps_per_rev * microsteps);
         moco_float path_scale = motion_get_float_or(args[ARG_path_scale].u_obj, (moco_float)1);
-        motion_check_status(moco_channel_set_scale(self->rig, channel, unit_scale, path_scale));
+        motion_check_status(moco_channel_set_scale(&self->rig, channel, unit_scale, path_scale));
     }
 
     return mp_const_none;
@@ -586,12 +596,11 @@ static mp_obj_t motion_rig_scale(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    motion_rig_ensure_initialized(self);
     mp_int_t channel = args[ARG_channel].u_int;
     motion_channel_check(self, channel);
 
     moco_float unit_scale, path_scale;
-    moco_channel_get_scale(self->rig, channel, &unit_scale, &path_scale);
+    moco_channel_get_scale(&self->rig, channel, &unit_scale, &path_scale);
 
     bool changed = false;
     if (args[ARG_unit_scale].u_obj != mp_const_none) {
@@ -603,7 +612,7 @@ static mp_obj_t motion_rig_scale(size_t n_args, const mp_obj_t *pos_args, mp_map
         changed = true;
     }
     if (changed) {
-        motion_check_status(moco_channel_set_scale(self->rig, channel, unit_scale, path_scale));
+        motion_check_status(moco_channel_set_scale(&self->rig, channel, unit_scale, path_scale));
     }
 
     mp_obj_t items[] = { mp_obj_new_float_from_f(unit_scale), mp_obj_new_float_from_f(path_scale) };
@@ -623,12 +632,11 @@ static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    motion_rig_ensure_initialized(self);
     mp_int_t channel = args[ARG_channel].u_int;
     motion_channel_check(self, channel);
 
     moco_float vmax, amax, vjump;
-    moco_channel_get_limits(self->rig, channel, &vmax, &amax, &vjump);
+    moco_channel_get_limits(&self->rig, channel, &vmax, &amax, &vjump);
 
     bool changed = false;
     if (args[ARG_vmax].u_obj != mp_const_none) {
@@ -649,7 +657,7 @@ static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map
         vjump = vmax;
     }
     if (changed) {
-        motion_check_status(moco_channel_set_limits(self->rig, channel, vmax, amax, vjump));
+        motion_check_status(moco_channel_set_limits(&self->rig, channel, vmax, amax, vjump));
     }
 
     mp_obj_t items[] = { mp_obj_new_float_from_f(vmax), mp_obj_new_float_from_f(amax), mp_obj_new_float_from_f(vjump) };
@@ -659,13 +667,12 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_rates_obj, 1, motion_rig_rates);
 
 static mp_obj_t motion_rig_reset_position(mp_obj_t self_in, mp_obj_t channel_in, mp_obj_t position_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
     mp_int_t channel = mp_obj_get_int(channel_in);
     motion_channel_check(self, channel);
     moco_float position = mp_obj_get_float_to_f(position_in);
-    motion_check_status(moco_channel_set_position(self->rig, channel, position));
+    motion_check_status(moco_channel_set_position(&self->rig, channel, position));
     moco_float pos[MOCO_MAX_CHANNELS];
-    moco_rig_position(self->rig, pos);
+    moco_rig_position(&self->rig, pos);
     self->last_target[channel] = pos[channel];
     return mp_const_none;
 }
@@ -717,7 +724,7 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     moco_queue_flags flags = (args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT)
                             | (args[ARG_more].u_bool ? MOCO_QUEUE_MORE : 0);
 
-    motion_check_status(moco_rig_move(self->rig, target, duration, cruise_speed, flags));
+    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, flags));
     // Updated even when `more` holds this call rather than committing it --
     // the next call's fill-forward must see it, since the *next* call's own
     // flush will commit this target before planning anything else (see
@@ -748,7 +755,6 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    motion_rig_ensure_initialized(self);
     mp_int_t channel = args[ARG_channel].u_int;
     motion_channel_check(self, channel);
     moco_float velocity = mp_obj_get_float_to_f(args[ARG_velocity].u_obj);
@@ -757,7 +763,7 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     }
 
     moco_float unit_scale;
-    moco_channel_get_scale(self->rig, channel, &unit_scale, NULL);
+    moco_channel_get_scale(&self->rig, channel, &unit_scale, NULL);
     moco_float roll_ahead = MOTION_JOG_ROLL_AHEAD_STEPS * unit_scale;
 
     moco_float target[MOCO_MAX_CHANNELS];
@@ -775,7 +781,7 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     // like the old queue_move(v_cruise == v_end) trick, without needing
     // MOCO_QUEUE_MORE staging at all (duration<=0 means "as fast as
     // possible", i.e. cruise the whole roll_ahead distance at `speed`).
-    motion_check_status(moco_rig_move(self->rig, target, (moco_float)0, speed, flags));
+    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed, flags));
     self->last_target[channel] = target[channel];
     motion_timer_kick();
 
@@ -800,11 +806,10 @@ static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    motion_rig_ensure_initialized(self);
     moco_float duration_s = mp_obj_get_float_to_f(args[ARG_duration_s].u_obj);
     moco_queue_flags flags = args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT;
 
-    motion_check_status(moco_rig_queue_dwell(self->rig, duration_s, flags));
+    motion_check_status(moco_rig_queue_dwell(&self->rig, duration_s, flags));
     motion_timer_kick();
 
     return mp_const_none;
@@ -822,7 +827,7 @@ static mp_obj_t motion_rig_get_position(size_t n_args, const mp_obj_t *pos_args,
 
     motion_rig_ensure_initialized(self);
     moco_float pos[MOCO_MAX_CHANNELS];
-    moco_rig_position(self->rig, pos);
+    moco_rig_position(&self->rig, pos);
 
     if (args[ARG_result].u_obj == mp_const_none) {
         mp_obj_t items[MOCO_MAX_CHANNELS];
@@ -850,45 +855,39 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_get_position_obj, 1, motion_rig_get
 
 static mp_obj_t motion_rig_get_velocity(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
-    return mp_obj_new_float_from_f(moco_rig_velocity(self->rig));
+    return mp_obj_new_float_from_f(moco_rig_velocity(&self->rig));
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_velocity_obj, motion_rig_get_velocity);
 
 static mp_obj_t motion_rig_get_queue_free(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
-    return mp_obj_new_int(moco_rig_queue_free(self->rig));
+    return mp_obj_new_int(moco_rig_queue_free(&self->rig));
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_queue_free_obj, motion_rig_get_queue_free);
 
 static mp_obj_t motion_rig_is_running(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
-    return mp_obj_new_bool(moco_rig_is_running(self->rig));
+    return mp_obj_new_bool(moco_rig_is_running(&self->rig));
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_is_running_obj, motion_rig_is_running);
 
 static mp_obj_t motion_rig_is_moving(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
-    return mp_obj_new_int_from_uint(moco_rig_is_moving(self->rig));
+    return mp_obj_new_int_from_uint(moco_rig_is_moving(&self->rig));
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_is_moving_obj, motion_rig_is_moving);
 
 static mp_obj_t motion_rig_get_stats(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
     motion_stats_obj_t *result = mp_obj_malloc(motion_stats_obj_t, &motion_stats_type);
-    motion_stats_fill(result, moco_rig_stats(self->rig));
+    motion_stats_fill(result, moco_rig_stats(&self->rig));
     return MP_OBJ_FROM_PTR(result);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_stats_obj, motion_rig_get_stats);
 
 static mp_obj_t motion_rig_clear_stats(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
-    moco_rig_clear_stats(self->rig);
+    moco_rig_clear_stats(&self->rig);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_clear_stats_obj, motion_rig_clear_stats);
