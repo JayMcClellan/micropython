@@ -1,7 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(cc --version)",
+      "Read(//tmp/baseline_check/tests/**)",
+      "Read(//c/Users/mccle/AppData/Local/Temp/baseline_check/tests/**)",
+      "Read(//tmp/**)",
+      "Bash(cc -std=c99 -Wall -Wextra -O2 -Itests -I. micromoco.c tests/*.c -o /tmp/baseline_check/test_baseline -lm)",
+      "Bash(./test_baseline)",
+      "Bash(rm -rf /tmp/baseline_check \"C:\\\\Users\\\\mccle\\\\AppData\\\\Local\\\\Temp\\\\baseline_check\")",
+      "Bash(perl -0pi -e 's/moco_rig_move\\\\\\(\\([^;]*?\\), NULL\\\\\\)/moco_rig_move\\($1\\)/g' *.c)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
     ]
   }
 }
