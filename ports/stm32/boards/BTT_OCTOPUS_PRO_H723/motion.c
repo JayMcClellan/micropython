@@ -89,18 +89,18 @@ MP_DEFINE_EXCEPTION(MotionBusy, MotionError)
 enum {
     STATS_updates, STATS_steps, STATS_seg_completed, STATS_slips, STATS_slip_ticks,
     STATS_max_late, STATS_floor_hits, STATS_queue_high_water,
-    STATS_clamp_v, STATS_clamp_a, STATS_corner_violations, STATS_errors,
+    STATS_clamp_v, STATS_clamp_a, STATS_corner_limited, STATS_errors,
     STATS_slip, STATS_floor_hit, STATS_clamp_v_flag, STATS_clamp_a_flag,
-    STATS_corner_violation, STATS_error, STATS_underrun,
+    STATS_corner_limited_flag, STATS_error, STATS_underrun,
     STATS_NUM_FIELDS,
 };
 
 static const uint16_t motion_stats_field_qstrs[STATS_NUM_FIELDS] = {
     MP_QSTR_updates, MP_QSTR_steps, MP_QSTR_seg_completed, MP_QSTR_slips, MP_QSTR_slip_ticks,
     MP_QSTR_max_late, MP_QSTR_floor_hits, MP_QSTR_queue_high_water,
-    MP_QSTR_clamp_v, MP_QSTR_clamp_a, MP_QSTR_corner_violations, MP_QSTR_errors,
+    MP_QSTR_clamp_v, MP_QSTR_clamp_a, MP_QSTR_corner_limited, MP_QSTR_errors,
     MP_QSTR_slip, MP_QSTR_floor_hit, MP_QSTR_clamp_v_flag, MP_QSTR_clamp_a_flag,
-    MP_QSTR_corner_violation, MP_QSTR_error, MP_QSTR_underrun,
+    MP_QSTR_corner_limited_flag, MP_QSTR_error, MP_QSTR_underrun,
 };
 
 typedef struct _motion_stats_obj_t {
@@ -171,13 +171,13 @@ static void motion_stats_fill(motion_stats_obj_t *self, const moco_stats *c_stat
     self->items[STATS_queue_high_water] = mp_obj_new_int_from_uint(c_stats->queue_high_water);
     self->items[STATS_clamp_v] = mp_obj_new_int_from_uint(c_stats->clamp_v);
     self->items[STATS_clamp_a] = mp_obj_new_int_from_uint(c_stats->clamp_a);
-    self->items[STATS_corner_violations] = mp_obj_new_int_from_uint(c_stats->corner_violations);
+    self->items[STATS_corner_limited] = mp_obj_new_int_from_uint(c_stats->corner_limited);
     self->items[STATS_errors] = mp_obj_new_int_from_uint(c_stats->errors);
     self->items[STATS_slip] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_SLIP);
     self->items[STATS_floor_hit] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_FLOOR_HIT);
     self->items[STATS_clamp_v_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CLAMP_V);
     self->items[STATS_clamp_a_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CLAMP_A);
-    self->items[STATS_corner_violation] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CORNER);
+    self->items[STATS_corner_limited_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CORNER_LIMIT);
     self->items[STATS_error] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_ERROR);
     self->items[STATS_underrun] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_UNDERRUN);
 }
