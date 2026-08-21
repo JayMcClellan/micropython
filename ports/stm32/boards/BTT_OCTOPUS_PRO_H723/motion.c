@@ -60,18 +60,6 @@ typedef struct _motion_rig_obj_t {
     moco_rig rig;
     intptr_t next_handle; // Next node in active rig list
     uint32_t vjump_explicit_mask; // bit per channel: vjump ever set via rates()
-    // Per-channel queue-end target, for move()/segment()'s target= fill-forward.
-    // There's no C-layer getter for this (moco_rig_position() is live position,
-    // not queue-end), so the binding tracks it: 0 at construction, updated after
-    // every successful move()/segment(), resynced from moco_rig_position() after
-    // stop() (which truncates the queue back to the live position).
-    moco_float last_target[MOCO_MAX_CHANNELS];
-    // Set by a stop() that is ramping down rather than halting on the spot: the
-    // truncation it ends with happens in the update path, some time after the
-    // call returns, so last_target can only be resynced once the rig is
-    // actually at rest -- which the next enqueue checks for. See
-    // motion_rig_sync_after_stop().
-    uint8_t stop_pending;
 } motion_rig_obj_t;
 
 static const mp_obj_type_t motion_rig_type;
@@ -398,10 +386,8 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
 
     self->n_channels = n_channels;
     self->q_depth = q_depth;
-    self->stop_pending = 0u;
     for (mp_int_t i = 0; i < n_channels; i++) {
         moco_channel_set_limits(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX, MOTION_DEFAULT_VMAX);
-        self->last_target[i] = (moco_float)0;
     }
 
     // Append self to the ISR scan list (next_handle already 0: the new tail)
@@ -492,19 +478,6 @@ static mp_obj_t motion_rig_stop(size_t n_args, const mp_obj_t *pos_args, mp_map_
     // a DMC stop handler, or a limit switch -- would be a new failure mode of
     // its own. No-op on a deinitialized rig, so no guard is needed.
     (void)moco_rig_stop(&self->rig, ramp_s);
-    if (moco_rig_is_running(&self->rig)) {
-        // A ramp is under way: the queue still holds everything it was
-        // executing, so last_target still describes where that queue ends and
-        // must NOT be rewound to the live position -- doing so would send the
-        // next jog off from a point the machine is nowhere near. It gets
-        // resynced once the rig is actually at rest, below.
-        self->stop_pending = 1u;
-    } else {
-        // stop() truncates the queue back to the live position -- resync our
-        // shadow of each channel's queue-end target to match (see last_target).
-        moco_rig_position(&self->rig, self->last_target);
-        self->stop_pending = 0u;
-    }
     motion_timer_kick();
     return mp_const_none;
 }
@@ -756,30 +729,16 @@ static mp_obj_t motion_rig_reset_position(mp_obj_t self_in, mp_obj_t channel_in,
     motion_channel_check(self, channel);
     moco_float position = mp_obj_get_float_to_f(position_in);
     motion_check_status(moco_channel_set_position(&self->rig, channel, position));
-    moco_float pos[MOCO_MAX_CHANNELS];
-    moco_rig_position(&self->rig, pos);
-    self->last_target[channel] = pos[channel];
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(motion_rig_reset_position_obj, motion_rig_reset_position);
 
-// Catch up with a ramped stop() that has since completed: it truncated the
-// queue back to the live position from inside the update path, where nothing
-// could touch last_target. Called before any enqueue reads it. A stop still
-// ramping is left alone -- its queue, and therefore last_target, is still
-// exactly what it was.
-static void motion_rig_sync_after_stop(motion_rig_obj_t *self) {
-    if (self->stop_pending && !moco_rig_is_running(&self->rig)) {
-        moco_rig_position(&self->rig, self->last_target);
-        self->stop_pending = 0u;
-    }
-}
-
 // Parses target (a list/tuple of per-channel values, entries may be None or
-// omitted) into a full n_channels-length array, filling forward from
-// self->last_target for every omitted or None entry.
+// omitted) into a full n_channels-length array, using
+// last target for every omitted or None entry.
 static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moco_float *target) {
-    motion_rig_sync_after_stop(self);
+    moco_rig_target(&self->rig, target);
+
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(target_obj, &len, &items);
@@ -789,8 +748,6 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
     for (mp_int_t i = 0; i < self->n_channels; i++) {
         if ((size_t)i < len && items[i] != mp_const_none) {
             target[i] = mp_obj_get_float_to_f(items[i]);
-        } else {
-            target[i] = self->last_target[i];
         }
     }
 }
@@ -823,13 +780,7 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
                             | (args[ARG_more].u_bool ? MOCO_QUEUE_MORE : 0);
 
     motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, flags));
-    // Updated even when `more` holds this call rather than committing it --
-    // the next call's fill-forward must see it, since the *next* call's own
-    // flush will commit this target before planning anything else (see
-    // moco_rig_move()'s own doc on MOCO_QUEUE_MORE).
-    for (mp_int_t i = 0; i < self->n_channels; i++) {
-        self->last_target[i] = target[i];
-    }
+
     motion_timer_kick();
 
     return mp_const_none;
@@ -882,10 +833,7 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     }
 
     moco_float target[MOCO_MAX_CHANNELS];
-    motion_rig_sync_after_stop(self);
-    for (mp_int_t i = 0; i < self->n_channels; i++) {
-        target[i] = self->last_target[i];
-    }
+    moco_rig_target(&self->rig, target);
     target[channel] += (velocity > 0) ? roll_ahead : -roll_ahead;
     moco_queue_flags flags = args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT;
 
@@ -897,7 +845,6 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     // MOCO_QUEUE_MORE staging at all (duration<=0 means "as fast as
     // possible", i.e. cruise the whole roll_ahead distance at `speed`).
     motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed, flags));
-    self->last_target[channel] = target[channel];
     motion_timer_kick();
 
     // moco_rig_move() no longer reports achieved duration -- estimate it
