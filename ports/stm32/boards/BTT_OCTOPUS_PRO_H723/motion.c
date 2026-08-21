@@ -66,6 +66,12 @@ typedef struct _motion_rig_obj_t {
     // every successful move()/segment(), resynced from moco_rig_position() after
     // stop() (which truncates the queue back to the live position).
     moco_float last_target[MOCO_MAX_CHANNELS];
+    // Set by a stop() that is ramping down rather than halting on the spot: the
+    // truncation it ends with happens in the update path, some time after the
+    // call returns, so last_target can only be resynced once the rig is
+    // actually at rest -- which the next enqueue checks for. See
+    // motion_rig_sync_after_stop().
+    uint8_t stop_pending;
 } motion_rig_obj_t;
 
 static const mp_obj_type_t motion_rig_type;
@@ -392,6 +398,7 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
 
     self->n_channels = n_channels;
     self->q_depth = q_depth;
+    self->stop_pending = 0u;
     for (mp_int_t i = 0; i < n_channels; i++) {
         moco_channel_set_limits(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX, MOTION_DEFAULT_VMAX);
         self->last_target[i] = (moco_float)0;
@@ -470,16 +477,94 @@ static mp_obj_t motion_rig_go(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_go_obj, motion_rig_go);
 
-static mp_obj_t motion_rig_stop(mp_obj_t self_in) {
-    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    // Both calls are no-ops on a deinitialized rig, so no guard is needed.
-    moco_rig_stop(&self->rig);
-    // stop() truncates the queue back to the live position -- resync our
-    // shadow of each channel's queue-end target to match (see last_target).
-    moco_rig_position(&self->rig, self->last_target);
+static mp_obj_t motion_rig_stop(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_ramp_s };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_ramp_s, MP_ARG_OBJ, {.u_obj = mp_const_none} },
+    };
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    moco_float ramp_s = motion_get_float_or(args[ARG_ramp_s].u_obj, (moco_float)0);
+    // Deliberately unchecked: a ramp the rig can't run degrades to an instant
+    // halt, so the machine stops either way, and raising out of stop() -- from
+    // a DMC stop handler, or a limit switch -- would be a new failure mode of
+    // its own. No-op on a deinitialized rig, so no guard is needed.
+    (void)moco_rig_stop(&self->rig, ramp_s);
+    if (moco_rig_is_running(&self->rig)) {
+        // A ramp is under way: the queue still holds everything it was
+        // executing, so last_target still describes where that queue ends and
+        // must NOT be rewound to the live position -- doing so would send the
+        // next jog off from a point the machine is nowhere near. It gets
+        // resynced once the rig is actually at rest, below.
+        self->stop_pending = 1u;
+    } else {
+        // stop() truncates the queue back to the live position -- resync our
+        // shadow of each channel's queue-end target to match (see last_target).
+        moco_rig_position(&self->rig, self->last_target);
+        self->stop_pending = 0u;
+    }
+    motion_timer_kick();
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_stop_obj, motion_rig_stop);
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_stop_obj, 1, motion_rig_stop);
+
+// feed_rate()/pause()/resume() -- see micromoco.h. The get/set-in-one shape
+// matches rates()/scale(): called bare it reports, called with a value it
+// sets, and either way it returns the rate now in effect.
+static mp_obj_t motion_rig_feed_rate(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_value, ARG_ramp };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_value, MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_ramp,  MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+    };
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    motion_rig_ensure_initialized(self);
+    if (args[ARG_value].u_obj != mp_const_none) {
+        moco_float rate = mp_obj_get_float_to_f(args[ARG_value].u_obj);
+        moco_float ramp = motion_get_float_or(args[ARG_ramp].u_obj, (moco_float)0);
+        motion_check_status(moco_rig_set_feed_rate(&self->rig, rate, ramp));
+        motion_timer_kick(); // a resume from zero must not wait out idle_s
+    }
+    return mp_obj_new_float_from_f(moco_rig_get_feed_rate(&self->rig));
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_feed_rate_obj, 1, motion_rig_feed_rate);
+
+static mp_obj_t motion_rig_pause(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_ramp };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_ramp, MP_ARG_OBJ, {.u_obj = mp_const_none} },
+    };
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    motion_rig_ensure_initialized(self);
+    motion_check_status(moco_rig_pause(&self->rig, motion_get_float_or(args[ARG_ramp].u_obj, (moco_float)0)));
+    motion_timer_kick();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_pause_obj, 1, motion_rig_pause);
+
+static mp_obj_t motion_rig_resume(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_ramp };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_ramp, MP_ARG_OBJ, {.u_obj = mp_const_none} },
+    };
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    motion_rig_ensure_initialized(self);
+    motion_check_status(moco_rig_resume(&self->rig, motion_get_float_or(args[ARG_ramp].u_obj, (moco_float)0)));
+    motion_timer_kick();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_resume_obj, 1, motion_rig_resume);
 
 // Resolves a stepper() pin argument, which is either a plain machine.Pin (active-high) or a
 // (Pin, active_hi) 2-tuple/list -- a lightweight, no-object-of-its-own equivalent of
@@ -678,10 +763,23 @@ static mp_obj_t motion_rig_reset_position(mp_obj_t self_in, mp_obj_t channel_in,
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(motion_rig_reset_position_obj, motion_rig_reset_position);
 
+// Catch up with a ramped stop() that has since completed: it truncated the
+// queue back to the live position from inside the update path, where nothing
+// could touch last_target. Called before any enqueue reads it. A stop still
+// ramping is left alone -- its queue, and therefore last_target, is still
+// exactly what it was.
+static void motion_rig_sync_after_stop(motion_rig_obj_t *self) {
+    if (self->stop_pending && !moco_rig_is_running(&self->rig)) {
+        moco_rig_position(&self->rig, self->last_target);
+        self->stop_pending = 0u;
+    }
+}
+
 // Parses target (a list/tuple of per-channel values, entries may be None or
 // omitted) into a full n_channels-length array, filling forward from
 // self->last_target for every omitted or None entry.
 static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moco_float *target) {
+    motion_rig_sync_after_stop(self);
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(target_obj, &len, &items);
@@ -784,6 +882,7 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     }
 
     moco_float target[MOCO_MAX_CHANNELS];
+    motion_rig_sync_after_stop(self);
     for (mp_int_t i = 0; i < self->n_channels; i++) {
         target[i] = self->last_target[i];
     }
@@ -913,6 +1012,9 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&motion_rig_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR_go), MP_ROM_PTR(&motion_rig_go_obj) },
     { MP_ROM_QSTR(MP_QSTR_stop), MP_ROM_PTR(&motion_rig_stop_obj) },
+    { MP_ROM_QSTR(MP_QSTR_feed_rate), MP_ROM_PTR(&motion_rig_feed_rate_obj) },
+    { MP_ROM_QSTR(MP_QSTR_pause), MP_ROM_PTR(&motion_rig_pause_obj) },
+    { MP_ROM_QSTR(MP_QSTR_resume), MP_ROM_PTR(&motion_rig_resume_obj) },
     { MP_ROM_QSTR(MP_QSTR_stepper), MP_ROM_PTR(&motion_rig_stepper_obj) },
     { MP_ROM_QSTR(MP_QSTR_scale), MP_ROM_PTR(&motion_rig_scale_obj) },
     { MP_ROM_QSTR(MP_QSTR_rates), MP_ROM_PTR(&motion_rig_rates_obj) },
