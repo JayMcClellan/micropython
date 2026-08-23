@@ -57,18 +57,55 @@ typedef struct {
    moco_pin dir;
 } moco_channel_data;
 
-static inline void moco_on_pos_change(moco_channel_data *d, int steps) {
-    (void)steps;
+/* Forward declaration at file scope, not left for each function below to
+ * introduce implicitly via its own parameter list: a struct tag named only
+ * inside a prototype's parameter list has prototype scope (C99 6.2.1p4),
+ * not file scope, so each occurrence would otherwise name a different,
+ * mutually incompatible incomplete type from micromoco.h's own later
+ * `typedef struct moco_rig moco_rig;` -- an -Wincompatible-pointer-types
+ * error at every moco_on_*() call site in micromoco.c. */
+struct moco_rig;
+
+static inline void moco_on_pos_change(struct moco_rig *rig, moco_channel_data *d, int steps) {
+    (void)rig; (void)steps;
     *d->step.on_addr = d->step.on_val;
 }
-static inline void moco_on_pos_done(moco_channel_data *d) {
+static inline void moco_on_pos_done(struct moco_rig *rig, moco_channel_data *d) {
+    (void)rig;
     *d->step.off_addr = d->step.off_val;
 }
-static inline void moco_on_dir_change(moco_channel_data *d, int dir) {
+static inline void moco_on_dir_change(struct moco_rig *rig, moco_channel_data *d, int dir) {
+    (void)rig;
     if (dir > 0)
         *d->dir.on_addr = d->dir.on_val;
     else
         *d->dir.off_addr = d->dir.off_val;
+}
+
+/* Move/segment lifecycle (micromoco.h §4.1), for tracing on a logic
+ * analyzer: PE9 brackets a whole move (high from moco_on_move_begin() to
+ * moco_on_move_end()), PE10 brackets one segment/phase within it likewise.
+ * For a single-phase move the two edges land together, which is expected.
+ * Direct BSRR set/reset, same idiom as moco_make_pin()'s on/off pattern in
+ * motion.c -- these two pins are dedicated to this tracing use and are not
+ * otherwise driven by this port. Both must be configured as push-pull
+ * outputs elsewhere (motion.c's motion_timer_enable(), alongside PE15/PE7's
+ * own setup) before any of these fire. */
+static inline void moco_on_move_begin(struct moco_rig *rig, int32_t seq) {
+    (void)rig; (void)seq;
+    GPIOE->BSRR = GPIO_PIN_9;
+}
+static inline void moco_on_move_end(struct moco_rig *rig, int32_t seq) {
+    (void)rig; (void)seq;
+    GPIOE->BSRR = (uint32_t)GPIO_PIN_9 << 16;
+}
+static inline void moco_on_seg_begin(struct moco_rig *rig, int32_t seq, uint8_t seg_idx) {
+    (void)rig; (void)seq; (void)seg_idx;
+    GPIOE->BSRR = GPIO_PIN_10;
+}
+static inline void moco_on_seg_end(struct moco_rig *rig, int32_t seq, uint8_t seg_idx) {
+    (void)rig; (void)seq; (void)seg_idx;
+    GPIOE->BSRR = (uint32_t)GPIO_PIN_10 << 16;
 }
 
 #define MOCO_ENTER_CRITICAL() mp_uint_t _moco_irq_state = disable_irq()
