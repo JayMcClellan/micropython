@@ -205,7 +205,7 @@ void motion_init(void) {
 // interrupt's actual timing on a logic analyzer during bring-up; kept until
 // it's no longer needed for that purpose.
 static void motion_timer_service(void) {
-    pin_E15->gpio->BSRR = pin_E15->pin_mask;
+    pin_E7->gpio->BSRR = pin_E7->pin_mask;
 
     uint32_t now = TIM24->CNT;
     uint32_t min_deadline = 0;
@@ -229,7 +229,7 @@ static void motion_timer_service(void) {
         }
     }
 
-    pin_E15->gpio->BSRR = pin_E15->pin_mask << 16;
+    pin_E7->gpio->BSRR = pin_E7->pin_mask << 16;
 }
 
 void TIM24_IRQHandler(void) {

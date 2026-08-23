@@ -10,10 +10,12 @@ AMAX_MM_S2 = 20
 # enable. Flip value= if your driver boards are wired the other way.
 Pin.board.MOTOR0_EN.init(Pin.OUT, value=0)
 Pin.board.MOTOR1_EN.init(Pin.OUT, value=0)
+Pin.board.MOTOR4_EN.init(Pin.OUT, value=0)
 
 axes = [
     (Pin.board.MOTOR0_STEP, Pin.board.MOTOR0_DIR),
     (Pin.board.MOTOR1_STEP, Pin.board.MOTOR1_DIR),
+    (Pin.board.MOTOR4_STEP, Pin.board.MOTOR4_DIR),
 ]
 
 rig = Rig(len(axes), q_depth=20)
@@ -45,5 +47,24 @@ def circle():
 
         speed = max_speed if deg_to_end > stop_deg else max_speed * deg_to_end / stop_deg
         rig.move([x - radius, y], cruise_speed=speed, more=deg < end)
+    while rig.is_running():
+        pass
+
+def yaw():
+    radius = 10
+    stop_deg = 45
+    max_speed = VMAX_MM_S
+
+    end = 359
+    for deg in range(end + 1):
+        rad = deg * math.pi / 180.0
+        x = radius * math.cos(rad)
+        y = radius * math.sin(rad)
+        while rig.get_queue_free() < 1:
+            pass
+        deg_to_end = min(deg, end - deg)
+
+        speed = max_speed if deg_to_end > stop_deg else max_speed * deg_to_end / stop_deg
+        rig.move([x - radius, None, y], cruise_speed=speed, more=deg < end)
     while rig.is_running():
         pass
