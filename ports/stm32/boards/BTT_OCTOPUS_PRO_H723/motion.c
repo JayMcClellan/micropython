@@ -76,6 +76,16 @@ MP_DEFINE_EXCEPTION(MotionError, RuntimeError)
 MP_DEFINE_EXCEPTION(MotionQueueFull, MotionError)
 MP_DEFINE_EXCEPTION(MotionBusy, MotionError)
 
+// Cycle-count instrumentation, reported through Rig.get_stats(). DWT->CYCCNT
+// is core-private and costs a handful of cycles to read, so it perturbs little
+// of what it measures -- and it is exact, unlike reading pulse widths off a
+// screen. `isr` covers the whole handler; `update` covers only the
+// moco_rig_update() calls within it, summed across every rig and every
+// consolidation pass, so isr - update is the shell's own overhead.
+// Cleared by Rig.clear_stats() along with the library's own counters.
+static uint32_t motion_isr_cycles, motion_isr_cycles_max;
+static uint32_t motion_update_cycles, motion_update_cycles_max;
+
 /******************************************************************************/
 // Stats: a fresh snapshot returned by Rig.get_stats(). The first block of
 // fields mirrors moco_stats's counters directly; the second unpacks its
@@ -83,19 +93,21 @@ MP_DEFINE_EXCEPTION(MotionBusy, MotionError)
 
 enum {
     STATS_updates, STATS_steps, STATS_seg_completed, STATS_slips, STATS_slip_ticks,
-    STATS_max_late, STATS_floor_hits, STATS_queue_high_water,
-    STATS_clamp_v, STATS_clamp_a, STATS_corner_limited, STATS_errors,
+    STATS_max_late, STATS_floor_hits, STATS_queue_high_water, STATS_errors,
     STATS_slip, STATS_floor_hit, STATS_clamp_v_flag, STATS_clamp_a_flag,
     STATS_corner_limited_flag, STATS_error, STATS_underrun,
+    STATS_isr_cycles, STATS_isr_cycles_max,
+    STATS_update_cycles, STATS_update_cycles_max,
     STATS_NUM_FIELDS,
 };
 
 static const uint16_t motion_stats_field_qstrs[STATS_NUM_FIELDS] = {
     MP_QSTR_updates, MP_QSTR_steps, MP_QSTR_seg_completed, MP_QSTR_slips, MP_QSTR_slip_ticks,
-    MP_QSTR_max_late, MP_QSTR_floor_hits, MP_QSTR_queue_high_water,
-    MP_QSTR_clamp_v, MP_QSTR_clamp_a, MP_QSTR_corner_limited, MP_QSTR_errors,
+    MP_QSTR_max_late, MP_QSTR_floor_hits, MP_QSTR_queue_high_water, MP_QSTR_errors,
     MP_QSTR_slip, MP_QSTR_floor_hit, MP_QSTR_clamp_v_flag, MP_QSTR_clamp_a_flag,
     MP_QSTR_corner_limited_flag, MP_QSTR_error, MP_QSTR_underrun,
+    MP_QSTR_isr_cycles, MP_QSTR_isr_cycles_max,
+    MP_QSTR_update_cycles, MP_QSTR_update_cycles_max,
 };
 
 typedef struct _motion_stats_obj_t {
@@ -111,8 +123,11 @@ static mp_obj_t motion_stats_make_new(const mp_obj_type_t *type, size_t n_args, 
     for (size_t i = 0; i < STATS_slip; i++) {
         self->items[i] = MP_OBJ_NEW_SMALL_INT(0);
     }
-    for (size_t i = STATS_slip; i < STATS_NUM_FIELDS; i++) {
+    for (size_t i = STATS_slip; i < STATS_isr_cycles; i++) {
         self->items[i] = mp_const_false;
+    }
+    for (size_t i = STATS_isr_cycles; i < STATS_NUM_FIELDS; i++) {
+        self->items[i] = MP_OBJ_NEW_SMALL_INT(0);
     }
     return MP_OBJ_FROM_PTR(self);
 }
@@ -164,9 +179,6 @@ static void motion_stats_fill(motion_stats_obj_t *self, const moco_stats *c_stat
     self->items[STATS_max_late] = mp_obj_new_int_from_uint(c_stats->max_late);
     self->items[STATS_floor_hits] = mp_obj_new_int_from_uint(c_stats->floor_hits);
     self->items[STATS_queue_high_water] = mp_obj_new_int_from_uint(c_stats->queue_high_water);
-    self->items[STATS_clamp_v] = mp_obj_new_int_from_uint(c_stats->clamp_v);
-    self->items[STATS_clamp_a] = mp_obj_new_int_from_uint(c_stats->clamp_a);
-    self->items[STATS_corner_limited] = mp_obj_new_int_from_uint(c_stats->corner_limited);
     self->items[STATS_errors] = mp_obj_new_int_from_uint(c_stats->errors);
     self->items[STATS_slip] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_SLIP);
     self->items[STATS_floor_hit] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_FLOOR_HIT);
@@ -175,6 +187,11 @@ static void motion_stats_fill(motion_stats_obj_t *self, const moco_stats *c_stat
     self->items[STATS_corner_limited_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CORNER_LIMIT);
     self->items[STATS_error] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_ERROR);
     self->items[STATS_underrun] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_UNDERRUN);
+    // Binding-level, not from moco_stats: see motion_isr_cycles above.
+    self->items[STATS_isr_cycles] = mp_obj_new_int_from_uint(motion_isr_cycles);
+    self->items[STATS_isr_cycles_max] = mp_obj_new_int_from_uint(motion_isr_cycles_max);
+    self->items[STATS_update_cycles] = mp_obj_new_int_from_uint(motion_update_cycles);
+    self->items[STATS_update_cycles_max] = mp_obj_new_int_from_uint(motion_update_cycles_max);
 }
 
 /******************************************************************************/
@@ -195,12 +212,23 @@ void motion_init(void) {
     motion_timer_refcount = 0;
 }
 
+// Trace pins, for watching the ISR's real timing on a logic analyzer during
+// bring-up. PE7 brackets the whole interrupt, PE15 just the moco_rig_update()
+// calls inside it, so the library's share is visible next to the step and dir
+// edges rather than only as a number. Direct BSRR writes against literal
+// masks: one immediate each, no pointer chasing in the measured region.
+// Both are configured in motion_timer_enable(). Kept until no longer needed.
+#define MOTION_TRACE_ISR_ON()     (GPIOE->BSRR = GPIO_PIN_7)
+#define MOTION_TRACE_ISR_OFF()    (GPIOE->BSRR = (uint32_t)GPIO_PIN_7 << 16)
+#define MOTION_TRACE_UPDATE_ON()  (GPIOE->BSRR = GPIO_PIN_15)
+#define MOTION_TRACE_UPDATE_OFF() (GPIOE->BSRR = (uint32_t)GPIO_PIN_15 << 16)
+
 // TIM24 is unused by MicroPython elsewhere on this MCU, so it's free to
-// drive directly. Toggling a trace pin gives a square wave, to watch the
-// interrupt's actual timing on a logic analyzer during bring-up; kept until
-// it's no longer needed for that purpose.
+// drive directly.
 static void motion_timer_service(void) {
-    pin_E7->gpio->BSRR = pin_E7->pin_mask;
+    uint32_t isr_start = DWT->CYCCNT;
+    uint32_t update_cycles = 0;
+    MOTION_TRACE_ISR_ON();
 
     uint32_t now = TIM24->CNT;
     for (int pass = 0;; pass++) {
@@ -208,7 +236,11 @@ static void motion_timer_service(void) {
         bool any = false;
         for (motion_rig_obj_t *self = motion_rig_ptr(motion_active_rigs_head); self; self = motion_rig_ptr(self->next_handle)) {
             if (moco_rig_initialized(&self->rig)) {
+                uint32_t update_start = DWT->CYCCNT;
+                MOTION_TRACE_UPDATE_ON();
                 uint32_t deadline = moco_rig_update(&self->rig, now);
+                MOTION_TRACE_UPDATE_OFF();
+                update_cycles += DWT->CYCCNT - update_start;
                 if (!any || (int32_t)(deadline - min_deadline) < 0) {
                     min_deadline = deadline;
                     any = true;
@@ -234,7 +266,19 @@ static void motion_timer_service(void) {
         }
     }
 
-    pin_E7->gpio->BSRR = pin_E7->pin_mask << 16;
+    motion_update_cycles = update_cycles;
+    if (update_cycles > motion_update_cycles_max) {
+        motion_update_cycles_max = update_cycles;
+    }
+
+    MOTION_TRACE_ISR_OFF();
+
+    // Last, so the trace-pin write above is inside the measured span the same
+    // way it is inside the analyzer's.
+    motion_isr_cycles = DWT->CYCCNT - isr_start;
+    if (motion_isr_cycles > motion_isr_cycles_max) {
+        motion_isr_cycles_max = motion_isr_cycles;
+    }
 }
 
 void TIM24_IRQHandler(void) {
@@ -258,10 +302,14 @@ static void motion_timer_enable(void) {
         return;
     }
 
+    // Trace pins (MOTION_TRACE_* above) and the cycle counter behind
+    // motion_isr_cycles. mp_hal_ticks_cpu_enable() is idempotent, so it costs
+    // nothing if the application already started CYCCNT for its own use.
+    mp_hal_pin_output(pin_E7);
+    mp_hal_pin_low(pin_E7);
     mp_hal_pin_output(pin_E15);
     mp_hal_pin_low(pin_E15);
-    mp_hal_pin_high(pin_E15);
-    mp_hal_pin_low(pin_E15);
+    mp_hal_ticks_cpu_enable();
 
     __HAL_RCC_TIM24_CLK_ENABLE();
 
@@ -955,6 +1003,10 @@ static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_stats_obj, motion_rig_get_stats)
 static mp_obj_t motion_rig_clear_stats(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
     moco_rig_clear_stats(&self->rig);
+    // The cycle counters are rig-independent (one shared ISR), but clearing
+    // them here is what makes "clear, run a move, read" a usable measurement.
+    motion_isr_cycles = motion_isr_cycles_max = 0;
+    motion_update_cycles = motion_update_cycles_max = 0;
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_clear_stats_obj, motion_rig_clear_stats);
@@ -995,10 +1047,59 @@ static MP_DEFINE_CONST_OBJ_TYPE(
     );
 
 /******************************************************************************/
+// clock_bench(): what a timer read actually costs.
+//
+// The update path's cost is dominated by how often it reads a clock, and the
+// two candidates are not remotely alike: TIM24->CNT sits behind the
+// AXI->AHB->APB1 bridge and stalls the core for the round trip, while
+// DWT->CYCCNT is core-private. This measures both rather than leaving it to
+// estimation -- returns (tim_cycles, dwt_cycles), each the cost of ONE read in
+// core cycles, scaled by 256 so a sub-cycle difference is still visible.
+//
+// Both loops are written the same way, with a volatile accumulator so the
+// reads cannot be hoisted or folded away, and the loop overhead is common to
+// both so it largely cancels in the comparison.
+#define MOTION_BENCH_READS (256)
+
+static mp_obj_t motion_clock_bench(void) {
+    volatile uint32_t sink = 0;
+    uint32_t t0, tim_cycles, dwt_cycles;
+    int i;
+
+    mp_hal_ticks_cpu_enable();
+
+    uint32_t irq_state = disable_irq();
+
+    t0 = DWT->CYCCNT;
+    for (i = 0; i < MOTION_BENCH_READS; i++) {
+        sink += TIM24->CNT;
+    }
+    tim_cycles = DWT->CYCCNT - t0;
+
+    t0 = DWT->CYCCNT;
+    for (i = 0; i < MOTION_BENCH_READS; i++) {
+        sink += DWT->CYCCNT;
+    }
+    dwt_cycles = DWT->CYCCNT - t0;
+
+    enable_irq(irq_state);
+    (void)sink;
+
+    mp_obj_t items[] = {
+        mp_obj_new_int_from_uint(tim_cycles),
+        mp_obj_new_int_from_uint(dwt_cycles),
+    };
+    return mp_obj_new_tuple(MP_ARRAY_SIZE(items), items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(motion_clock_bench_obj, motion_clock_bench);
+
+/******************************************************************************/
 // The `motion` module.
 
 static const mp_rom_map_elem_t motion_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_motion) },
+
+    { MP_ROM_QSTR(MP_QSTR_clock_bench), MP_ROM_PTR(&motion_clock_bench_obj) },
 
     { MP_ROM_QSTR(MP_QSTR_Rig), MP_ROM_PTR(&motion_rig_type) },
     { MP_ROM_QSTR(MP_QSTR_Stats), MP_ROM_PTR(&motion_stats_type) },
