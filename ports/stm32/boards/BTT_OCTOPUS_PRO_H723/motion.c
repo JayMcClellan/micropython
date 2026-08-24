@@ -35,11 +35,6 @@
 
 #define MOTION_CLOCK_HZ (5000000)
 
-// Matches the driver-timing default moco_rig_init() seeds internally
-// (moco_design.md §5.1); kept in sync by hand since the C layer doesn't
-// expose it as a symbol.
-#define MOTION_DEFAULT_TIMING_US ((moco_float)2)
-
 // Seeded once per channel at construction, in raw steps (unit_scale is still
 // 1.0 at that point), so a freshly built Rig can move without an explicit
 // rates() call. Binding-level convenience only -- moco_rig_init() itself
@@ -201,31 +196,41 @@ void motion_init(void) {
 }
 
 // TIM24 is unused by MicroPython elsewhere on this MCU, so it's free to
-// drive directly. Toggling PE15 gives a square wave on the pin, to watch the
+// drive directly. Toggling a trace pin gives a square wave, to watch the
 // interrupt's actual timing on a logic analyzer during bring-up; kept until
 // it's no longer needed for that purpose.
 static void motion_timer_service(void) {
     pin_E7->gpio->BSRR = pin_E7->pin_mask;
 
     uint32_t now = TIM24->CNT;
-    uint32_t min_deadline = 0;
-    bool any = false;
-    for (motion_rig_obj_t *self = motion_rig_ptr(motion_active_rigs_head); self; self = motion_rig_ptr(self->next_handle)) {
-        if (moco_rig_initialized(&self->rig)) {
-            uint32_t deadline = moco_rig_update(&self->rig, now);
-            if (!any || (int32_t)(deadline - min_deadline) < 0) {
-                min_deadline = deadline;
-                any = true;
+    for (int pass = 0;; pass++) {
+        uint32_t min_deadline = 0;
+        bool any = false;
+        for (motion_rig_obj_t *self = motion_rig_ptr(motion_active_rigs_head); self; self = motion_rig_ptr(self->next_handle)) {
+            if (moco_rig_initialized(&self->rig)) {
+                uint32_t deadline = moco_rig_update(&self->rig, now);
+                if (!any || (int32_t)(deadline - min_deadline) < 0) {
+                    min_deadline = deadline;
+                    any = true;
+                }
             }
         }
-    }
-    if (any) {
+        if (!any) {
+            break;
+        }
+
+        // Arm first, then check: CC matches on equality, so a deadline CNT
+        // crossed after the write is missed until CNT wraps (~14 min at 5MHz).
         TIM24->CCR1 = min_deadline;
-        if ((int32_t)(TIM24->CNT - min_deadline) >= 0) {
-            // Already passed by the time we finished computing it -- force
-            // immediate re-entry rather than waiting ~71 min (at 1MHz) for
-            // CNT to wrap all the way around to min_deadline again.
-            TIM24->EGR = TIM_EGR_CC1G;
+        now = TIM24->CNT;
+        if ((int32_t)(now - min_deadline) < 0) {
+            break; // safely armed
+        }
+        // Already passed by the time we finished computing it -- update again
+        // immediately rather than re-entering, up to a limit.
+        if (pass >= 2) {
+            TIM24->EGR = TIM_EGR_CC1G; // force re-entry
+            break;
         }
     }
 
@@ -608,10 +613,10 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
     // touches the channel's live moco_channel_data -- moco_channel_get_data()
     // itself has no such guard (moco_design.md §5.1), and a write there while
     // RUNNING could race the ISR mid-struct.
-    moco_float pulse_us = motion_get_float_or(args[ARG_pulse_us].u_obj, MOTION_DEFAULT_TIMING_US);
-    moco_float low_min_us = motion_get_float_or(args[ARG_low_min_us].u_obj, MOTION_DEFAULT_TIMING_US);
-    moco_float dir_setup_us = motion_get_float_or(args[ARG_dir_setup_us].u_obj, MOTION_DEFAULT_TIMING_US);
-    moco_float dir_hold_us = motion_get_float_or(args[ARG_dir_hold_us].u_obj, MOTION_DEFAULT_TIMING_US);
+    moco_float pulse_us = motion_get_float_or(args[ARG_pulse_us].u_obj, MOCO_DEFAULT_PULSE_US);
+    moco_float low_min_us = motion_get_float_or(args[ARG_low_min_us].u_obj, MOCO_DEFAULT_PULSE_US);
+    moco_float dir_setup_us = motion_get_float_or(args[ARG_dir_setup_us].u_obj, MOCO_DEFAULT_DIR_US);
+    moco_float dir_hold_us = motion_get_float_or(args[ARG_dir_hold_us].u_obj, MOCO_DEFAULT_DIR_US);
     motion_check_status(moco_channel_set_timing(&self->rig, channel, pulse_us, low_min_us, dir_setup_us, dir_hold_us));
 
     const machine_pin_obj_t *step_pin;
