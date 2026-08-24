@@ -30,6 +30,15 @@ static inline float moco_hw_sqrtf(float x) {
 }
 #define MOCO_SQRTF(x) moco_hw_sqrtf(x)
 
+// The free-running counter motion.c also samples for moco_rig_update()'s `now`
+// (motion_timer_service()). Read directly rather than passed in, for the two
+// places a real-time obligation to the driver is being met: the pulse-width
+// wait in a hard stop, and the setup/low-time floor before a rising edge. A
+// floor that expired while the update was computing is then honored at once
+// instead of costing another wake. Trajectory timing still uses `now`, so a
+// single ISR can hold every rig it services to one coherent snapshot.
+#define MOCO_NOW() (TIM24->CNT)
+
 // Allocation for moco_rig_init()'s three blocks. m_malloc_maybe(), not
 // m_malloc(): the latter raises MemoryError via nlr_jump on failure, which
 // would unwind straight past moco_rig_init()'s own cleanup and strand any
@@ -66,8 +75,12 @@ typedef struct {
  * error at every moco_on_*() call site in micromoco.c. */
 struct moco_rig;
 
-static inline void moco_on_pos_change(struct moco_rig *rig, moco_channel_data *d, int steps) {
-    (void)rig; (void)steps;
+// `position` is this channel's real-world position as of the pulse. Unused
+// here -- the parameter costs nothing at -Os, being dead once inlined -- but
+// it is what a config that wants to track position should read, rather than
+// counting step pulses itself.
+static inline void moco_on_pos_change(struct moco_rig *rig, moco_channel_data *d, moco_float position) {
+    (void)rig; (void)position;
     *d->step.on_addr = d->step.on_val;
 }
 static inline void moco_on_pos_done(struct moco_rig *rig, moco_channel_data *d) {
