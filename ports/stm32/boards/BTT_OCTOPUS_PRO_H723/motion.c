@@ -828,10 +828,11 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
 // once a move is actually reached.
 //
 // Smoke-test bridge: `more` (MOCO_QUEUE_MORE staging) and `go=False`
-// (MOCO_QUEUE_WAIT) have nothing left to map onto -- moco_rig_move() no
-// longer takes a flags argument at all. Streaming waypoints is now just
-// calling this every frame (the redesign plan's own description of what
-// MOCO_QUEUE_MORE dissolves into); both kwargs are still accepted, for API
+// (MOCO_QUEUE_WAIT) have nothing left to map onto -- streaming waypoints is
+// now just calling this every frame (the redesign plan's own description of
+// what MOCO_QUEUE_MORE dissolves into). moco_rig_move() does take a flags
+// argument again (reserved for future use, currently always 0), but it isn't
+// what `more`/`go` used to mean -- both kwargs are still accepted, for API
 // compatibility, but are inert.
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_more, ARG_go };
@@ -854,7 +855,7 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     (void)args[ARG_more].u_bool;
     (void)args[ARG_go].u_bool;
 
-    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed));
+    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, 0u));
 
     motion_timer_kick();
 
@@ -920,7 +921,7 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     // in practice -- this ramps to speed at amax, then cruises (duration<=0
     // means "as fast as possible", i.e. cruise the whole roll_ahead distance
     // at `speed`).
-    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed));
+    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed, 0u));
     motion_timer_kick();
 
     // moco_rig_move() no longer reports achieved duration -- estimate it
