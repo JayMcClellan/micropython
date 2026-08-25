@@ -54,7 +54,6 @@ typedef struct _motion_rig_obj_t {
     // what keeps those three blocks traced.
     moco_rig rig;
     intptr_t next_handle; // Next node in active rig list
-    uint32_t vjump_explicit_mask; // bit per channel: vjump ever set via rates()
 } motion_rig_obj_t;
 
 static const mp_obj_type_t motion_rig_type;
@@ -170,23 +169,33 @@ static MP_DEFINE_CONST_OBJ_TYPE(
     attr, &motion_stats_attr
     );
 
+// Smoke-test bridge to the redesigned micromoco (see the project's redesign
+// plan): several moco_stats fields/flags this used to read no longer exist
+// (phases, trapezoid clamps, backstop/underrun, schedule-slip correction all
+// dissolved with the old trajectory model -- see the plan's "What this
+// dissolves" table). Rather than change motion.c's own Python-facing Stats
+// shape, those fields keep reporting -- always 0/False, since there is
+// nothing left to report. seg_completed maps onto the closest surviving
+// counter, moves_completed (a move is the whole unit of completion now,
+// there being no more phases within one). Revisit once Stats itself gets a
+// real pass (the redesign plan's Phase 5).
 static void motion_stats_fill(motion_stats_obj_t *self, const moco_stats *c_stats) {
     self->items[STATS_updates] = mp_obj_new_int_from_uint(c_stats->updates);
     self->items[STATS_steps] = mp_obj_new_int_from_uint(c_stats->steps);
-    self->items[STATS_seg_completed] = mp_obj_new_int_from_uint(c_stats->seg_completed);
-    self->items[STATS_slips] = mp_obj_new_int_from_uint(c_stats->slips);
-    self->items[STATS_slip_ticks] = mp_obj_new_int_from_uint(c_stats->slip_ticks);
+    self->items[STATS_seg_completed] = mp_obj_new_int_from_uint(c_stats->moves_completed);
+    self->items[STATS_slips] = MP_OBJ_NEW_SMALL_INT(0);
+    self->items[STATS_slip_ticks] = MP_OBJ_NEW_SMALL_INT(0);
     self->items[STATS_max_late] = mp_obj_new_int_from_uint(c_stats->max_late);
     self->items[STATS_floor_hits] = mp_obj_new_int_from_uint(c_stats->floor_hits);
     self->items[STATS_queue_high_water] = mp_obj_new_int_from_uint(c_stats->queue_high_water);
     self->items[STATS_errors] = mp_obj_new_int_from_uint(c_stats->errors);
-    self->items[STATS_slip] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_SLIP);
+    self->items[STATS_slip] = mp_const_false;
     self->items[STATS_floor_hit] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_FLOOR_HIT);
-    self->items[STATS_clamp_v_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CLAMP_V);
-    self->items[STATS_clamp_a_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CLAMP_A);
-    self->items[STATS_corner_limited_flag] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_CORNER_LIMIT);
+    self->items[STATS_clamp_v_flag] = mp_const_false;
+    self->items[STATS_clamp_a_flag] = mp_const_false;
+    self->items[STATS_corner_limited_flag] = mp_const_false;
     self->items[STATS_error] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_ERROR);
-    self->items[STATS_underrun] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_UNDERRUN);
+    self->items[STATS_underrun] = mp_const_false;
     // Binding-level, not from moco_stats: see motion_isr_cycles above.
     self->items[STATS_isr_cycles] = mp_obj_new_int_from_uint(motion_isr_cycles);
     self->items[STATS_isr_cycles_max] = mp_obj_new_int_from_uint(motion_isr_cycles_max);
@@ -427,7 +436,6 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
     self->rig = (moco_rig){0};
     self->n_channels = 0;
     self->q_depth = 0;
-    self->vjump_explicit_mask = 0;
 
     moco_status status = moco_rig_init(&self->rig, n_channels, q_depth, MOTION_CLOCK_HZ);
     if (status == MOCO_ERR_NO_MEM) {
@@ -440,7 +448,7 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
     self->n_channels = n_channels;
     self->q_depth = q_depth;
     for (mp_int_t i = 0; i < n_channels; i++) {
-        moco_channel_set_limits(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX, MOTION_DEFAULT_VMAX);
+        moco_channel_set_limits(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX);
     }
 
     // Append self to the ISR scan list (next_handle already 0: the new tail)
@@ -505,12 +513,13 @@ static void motion_rig_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
     }
 }
 
+// Smoke-test bridge: moco_rig_go() is gone under the redesign -- there is no
+// more HALTED/RUNNING gate, the servo cycle just runs unconditionally (see
+// the redesign plan). go() is kept as a callable no-op, purely for API
+// compatibility, rather than removed from the Rig type outright.
 static mp_obj_t motion_rig_go(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    moco_status status = moco_rig_go(&self->rig);
-    if (status != MOCO_OK) {
-        mp_raise_msg(&mp_type_MotionError, MP_ERROR_TEXT("Rig configuration is invalid"));
-    }
+    motion_rig_ensure_initialized(self);
     motion_timer_kick();
     return mp_const_none;
 }
@@ -525,12 +534,13 @@ static mp_obj_t motion_rig_stop(size_t n_args, const mp_obj_t *pos_args, mp_map_
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    moco_float ramp_s = motion_get_float_or(args[ARG_ramp_s].u_obj, (moco_float)0);
-    // Deliberately unchecked: a ramp the rig can't run degrades to an instant
-    // halt, so the machine stops either way, and raising out of stop() -- from
-    // a DMC stop handler, or a limit switch -- would be a new failure mode of
-    // its own. No-op on a deinitialized rig, so no guard is needed.
-    (void)moco_rig_stop(&self->rig, ramp_s);
+    // Smoke-test bridge: ramp_s is accepted (unused) for API compatibility --
+    // moco_rig_stop() no longer takes one. It always decelerates at the
+    // tightest channel's own amax now, never gentler and never instant (see
+    // the redesign plan's "no caller-tunable stop duration" decision).
+    (void)args[ARG_ramp_s].u_obj;
+    // No-op on a deinitialized rig, so no guard is needed.
+    (void)moco_rig_stop(&self->rig);
     motion_timer_kick();
     return mp_const_none;
 }
@@ -539,6 +549,12 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_stop_obj, 1, motion_rig_stop);
 // feed_rate()/pause()/resume() -- see micromoco.h. The get/set-in-one shape
 // matches rates()/scale(): called bare it reports, called with a value it
 // sets, and either way it returns the rate now in effect.
+//
+// Smoke-test bridge: feed_rate is deferred entirely under the redesign (see
+// the redesign plan's "Pause, resume, and stop" section) -- there is no
+// moco_rig_set_feed_rate()/moco_rig_get_feed_rate() anymore. A requested
+// value/ramp is accepted (for API compatibility) but has no effect; this
+// always reports the fixed rate of 1.0.
 static mp_obj_t motion_rig_feed_rate(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_value, ARG_ramp };
     static const mp_arg_t allowed_args[] = {
@@ -550,13 +566,9 @@ static mp_obj_t motion_rig_feed_rate(size_t n_args, const mp_obj_t *pos_args, mp
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
     motion_rig_ensure_initialized(self);
-    if (args[ARG_value].u_obj != mp_const_none) {
-        moco_float rate = mp_obj_get_float_to_f(args[ARG_value].u_obj);
-        moco_float ramp = motion_get_float_or(args[ARG_ramp].u_obj, (moco_float)0);
-        motion_check_status(moco_rig_set_feed_rate(&self->rig, rate, ramp));
-        motion_timer_kick(); // a resume from zero must not wait out idle_s
-    }
-    return mp_obj_new_float_from_f(moco_rig_get_feed_rate(&self->rig));
+    (void)args[ARG_value].u_obj;
+    (void)args[ARG_ramp].u_obj;
+    return mp_obj_new_float_from_f((moco_float)1);
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_feed_rate_obj, 1, motion_rig_feed_rate);
 
@@ -569,8 +581,11 @@ static mp_obj_t motion_rig_pause(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
+    // Smoke-test bridge: ramp is accepted (unused) for API compatibility --
+    // moco_rig_pause() no longer takes one (see motion_rig_stop() above).
     motion_rig_ensure_initialized(self);
-    motion_check_status(moco_rig_pause(&self->rig, motion_get_float_or(args[ARG_ramp].u_obj, (moco_float)0)));
+    (void)args[ARG_ramp].u_obj;
+    motion_check_status(moco_rig_pause(&self->rig));
     motion_timer_kick();
     return mp_const_none;
 }
@@ -585,8 +600,11 @@ static mp_obj_t motion_rig_resume(size_t n_args, const mp_obj_t *pos_args, mp_ma
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
+    // Smoke-test bridge: ramp is accepted (unused) for API compatibility --
+    // moco_rig_resume() no longer takes one (see motion_rig_stop() above).
     motion_rig_ensure_initialized(self);
-    motion_check_status(moco_rig_resume(&self->rig, motion_get_float_or(args[ARG_ramp].u_obj, (moco_float)0)));
+    (void)args[ARG_ramp].u_obj;
+    motion_check_status(moco_rig_resume(&self->rig));
     motion_timer_kick();
     return mp_const_none;
 }
@@ -731,6 +749,13 @@ static mp_obj_t motion_rig_scale(size_t n_args, const mp_obj_t *pos_args, mp_map
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_scale_obj, 1, motion_rig_scale);
 
+// Smoke-test bridge: vjump (a caller-supplied per-move junction speed) is
+// gone under the redesign -- there's no rule-6 junction ceiling yet (see the
+// redesign plan's System rules). vjump= is still accepted/returned here for
+// API compatibility, but it's purely a binding-level echo now: it never
+// reaches moco_channel_set_limits() (2 args now, not 3), and self reports it
+// as always equal to vmax, matching the old default-tracking behavior for
+// the common case where a caller never set it explicitly.
 static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_channel, ARG_vmax, ARG_amax, ARG_vjump };
     static const mp_arg_t allowed_args[] = {
@@ -746,8 +771,8 @@ static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_int_t channel = args[ARG_channel].u_int;
     motion_channel_check(self, channel);
 
-    moco_float vmax, amax, vjump;
-    moco_channel_get_limits(&self->rig, channel, &vmax, &amax, &vjump);
+    moco_float vmax, amax;
+    moco_channel_get_limits(&self->rig, channel, &vmax, &amax);
 
     bool changed = false;
     if (args[ARG_vmax].u_obj != mp_const_none) {
@@ -758,20 +783,12 @@ static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map
         amax = mp_obj_get_float_to_f(args[ARG_amax].u_obj);
         changed = true;
     }
-    uint32_t channel_bit = (uint32_t)1 << channel;
-    if (args[ARG_vjump].u_obj != mp_const_none) {
-        vjump = mp_obj_get_float_to_f(args[ARG_vjump].u_obj);
-        self->vjump_explicit_mask |= channel_bit;
-        changed = true;
-    } else if (changed && !(self->vjump_explicit_mask & channel_bit)) {
-        // vjump never explicitly set -- track vmax, the most permissive value.
-        vjump = vmax;
-    }
+    (void)args[ARG_vjump].u_obj;
     if (changed) {
-        motion_check_status(moco_channel_set_limits(&self->rig, channel, vmax, amax, vjump));
+        motion_check_status(moco_channel_set_limits(&self->rig, channel, vmax, amax));
     }
 
-    mp_obj_t items[] = { mp_obj_new_float_from_f(vmax), mp_obj_new_float_from_f(amax), mp_obj_new_float_from_f(vjump) };
+    mp_obj_t items[] = { mp_obj_new_float_from_f(vmax), mp_obj_new_float_from_f(amax), mp_obj_new_float_from_f(vmax) };
     return mp_obj_new_tuple(MP_ARRAY_SIZE(items), items);
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_rates_obj, 1, motion_rig_rates);
@@ -805,12 +822,17 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
     }
 }
 
-// target, duration, cruise_speed, more -- see moco_rig_move()'s own doc
-// (micromoco.h) for the full MOCO_QUEUE_MORE staging protocol; `more`
-// (motion.c) maps directly onto MOCO_QUEUE_MORE. There is currently no
-// synchronous way to learn the actual duration/end speed a call achieved --
-// deferred to a future opt-in query (moco_design.md's move-stream design),
-// since achieved state is only meaningful once a move is actually reached.
+// target, duration, cruise_speed, more, go -- see moco_rig_move()'s own doc
+// (micromoco.h). There is currently no synchronous way to learn the actual
+// duration/end speed a call achieved -- achieved state is only meaningful
+// once a move is actually reached.
+//
+// Smoke-test bridge: `more` (MOCO_QUEUE_MORE staging) and `go=False`
+// (MOCO_QUEUE_WAIT) have nothing left to map onto -- moco_rig_move() no
+// longer takes a flags argument at all. Streaming waypoints is now just
+// calling this every frame (the redesign plan's own description of what
+// MOCO_QUEUE_MORE dissolves into); both kwargs are still accepted, for API
+// compatibility, but are inert.
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_more, ARG_go };
     static const mp_arg_t allowed_args[] = {
@@ -829,10 +851,10 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     motion_parse_target(self, args[ARG_target].u_obj, target);
     moco_float duration = motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0);
     moco_float cruise_speed = motion_get_float_or(args[ARG_cruise_speed].u_obj, (moco_float)0);
-    moco_queue_flags flags = (args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT)
-                            | (args[ARG_more].u_bool ? MOCO_QUEUE_MORE : 0);
+    (void)args[ARG_more].u_bool;
+    (void)args[ARG_go].u_bool;
 
-    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, flags));
+    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed));
 
     motion_timer_kick();
 
@@ -888,16 +910,17 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     moco_float target[MOCO_MAX_CHANNELS];
     moco_rig_target(&self->rig, target);
     target[channel] += (velocity > 0) ? roll_ahead : -roll_ahead;
-    moco_queue_flags flags = args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT;
+    // Smoke-test bridge: go=False (MOCO_QUEUE_WAIT) has nothing left to map
+    // onto -- see motion_rig_move() above. Accepted, unused.
+    (void)args[ARG_go].u_bool;
 
     // A self-committed moco_rig_move() always ends at rest, but with
     // roll_ahead this large the decel-to-rest phase lands so far past
     // wherever the caller will actually stop jogging that it never matters
-    // in practice -- this ramps to speed at amax, then cruises, exactly
-    // like the old queue_move(v_cruise == v_end) trick, without needing
-    // MOCO_QUEUE_MORE staging at all (duration<=0 means "as fast as
-    // possible", i.e. cruise the whole roll_ahead distance at `speed`).
-    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed, flags));
+    // in practice -- this ramps to speed at amax, then cruises (duration<=0
+    // means "as fast as possible", i.e. cruise the whole roll_ahead distance
+    // at `speed`).
+    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed));
     motion_timer_kick();
 
     // moco_rig_move() no longer reports achieved duration -- estimate it
@@ -922,9 +945,11 @@ static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
     moco_float duration_s = mp_obj_get_float_to_f(args[ARG_duration_s].u_obj);
-    moco_queue_flags flags = args[ARG_go].u_bool ? 0 : MOCO_QUEUE_WAIT;
+    // Smoke-test bridge: go=False (MOCO_QUEUE_WAIT) has nothing left to map
+    // onto -- see motion_rig_move() above. Accepted, unused.
+    (void)args[ARG_go].u_bool;
 
-    motion_check_status(moco_rig_queue_dwell(&self->rig, duration_s, flags));
+    motion_check_status(moco_rig_queue_dwell(&self->rig, duration_s));
     motion_timer_kick();
 
     return mp_const_none;

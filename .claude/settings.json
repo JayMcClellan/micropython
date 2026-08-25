@@ -2,14 +2,20 @@
   "permissions": {
     "allow": [
       "Bash(python -c ' *)",
-      "Bash(cc --version)",
       "Read(//tmp/baseline_check/tests/**)",
       "Read(//c/Users/mccle/AppData/Local/Temp/baseline_check/tests/**)",
       "Read(//tmp/**)",
-      "Bash(cc -std=c99 -Wall -Wextra -O2 -Itests -I. micromoco.c tests/*.c -o /tmp/baseline_check/test_baseline -lm)",
+      "Bash(gcc *)",
       "Bash(./test_baseline)",
       "Bash(rm -rf /tmp/baseline_check \"C:\\\\Users\\\\mccle\\\\AppData\\\\Local\\\\Temp\\\\baseline_check\")",
-      "Bash(perl -0pi -e 's/moco_rig_move\\\\\\(\\([^;]*?\\), NULL\\\\\\)/moco_rig_move\\($1\\)/g' *.c)"
+      "Bash(perl -0pi -e 's/moco_rig_move\\\\\\(\\([^;]*?\\), NULL\\\\\\)/moco_rig_move\\($1\\)/g' *.c)",
+      "Bash(cc *)",
+      "Bash(cc -std=c99 -Wall -Wextra -Itests -I. -o build/run_phase1 micromoco.c tests/harness.c tests/mock_pin.c tests/mock_alloc.c tests/test.c tests/suite_phase1.c tests/run_phase1.c -lm)",
+      "Bash(./build/*)",
+      "Bash(./build/run_phase2)",
+      "Bash(/tmp/debug_corner)",
+      "Bash(/tmp/debug_corner2)",
+      "Bash(/tmp/debug_corner3)"
     ],
     "additionalDirectories": [
       "\\tmp"
