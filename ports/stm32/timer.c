@@ -1816,7 +1816,7 @@ static void timer_handle_irq_channel(pyb_timer_obj_t *tim, uint8_t channel, mp_o
 }
 
 void timer_irq_handler(uint tim_id) {
-    GPIOE->BSRR = GPIO_PIN_8; // DEBUG
+    //GPIOE->BSRR = GPIO_PIN_8; // DEBUG
     if (tim_id - 1 < PYB_TIMER_OBJ_ALL_NUM) {
         // get the timer object
         pyb_timer_obj_t *tim = MP_STATE_PORT(pyb_timer_obj_all)[tim_id - 1];
@@ -1850,7 +1850,7 @@ void timer_irq_handler(uint tim_id) {
         }
     }
 DONE:
-    GPIOE->BSRR = (uint32_t)GPIO_PIN_8 << 16; // DEBUG
+    //GPIOE->BSRR = (uint32_t)GPIO_PIN_8 << 16; // DEBUG
 }
 
 MP_REGISTER_ROOT_POINTER(struct _pyb_timer_obj_t *pyb_timer_obj_all[MICROPY_HW_MAX_TIMER]);

@@ -95,30 +95,65 @@ static inline void moco_on_dir_change(struct moco_rig *rig, moco_channel_data *d
         *d->dir.off_addr = d->dir.off_val;
 }
 
-/* Move/segment lifecycle (micromoco.h §4.1), for tracing on a logic
- * analyzer: PE9 brackets a whole move (high from moco_on_move_begin() to
- * moco_on_move_end()), PE10 brackets one segment/phase within it likewise.
- * For a single-phase move the two edges land together, which is expected.
+/* ---- trace pins, bring-up instrumentation (kept until no longer needed) --
+ *
+ * The EXP1 header (LCD/TFT, pins.csv) is otherwise unused on this board and
+ * gives 8 free GPIOE lines, all centralized here rather than split between
+ * this file and motion.c, so the whole pin assignment is visible in one
+ * place: PE8/PE7/PE9/PE10/PE12 outermost-to-innermost, in call order (the
+ * timer ISR contains moco_rig_update(), which contains moco__advance_real()
+ * -- itself containing a retarget when one happens to fire -- and,
+ * separately, moco__servo_cycle()). PE13/PE14/PE15 (EXP1_6/7/8) are free for
+ * whatever needs tracing next.
+ *
  * Direct BSRR set/reset, same idiom as moco_make_pin()'s on/off pattern in
- * motion.c -- these two pins are dedicated to this tracing use and are not
- * otherwise driven by this port. Both must be configured as push-pull
- * outputs elsewhere (motion.c's motion_timer_enable(), alongside PE15/PE7's
- * own setup) before any of these fire. */
+ * motion.c: one immediate each, no pointer chasing in a measured region.
+ * All five pins must be configured as push-pull outputs before any of these
+ * fire -- motion.c's motion_timer_enable() does this alongside the timer
+ * setup itself. Macros, not inline functions, so they read as raw
+ * instrumentation at every call site rather than being mistaken for one of
+ * the library's real event callbacks below. */
+#define MOTION_TRACE_ISR_ON()      (GPIOE->BSRR = GPIO_PIN_8)
+#define MOTION_TRACE_ISR_OFF()     (GPIOE->BSRR = (uint32_t)GPIO_PIN_8 << 16)
+#define MOTION_TRACE_UPDATE_ON()   (GPIOE->BSRR = GPIO_PIN_7)
+#define MOTION_TRACE_UPDATE_OFF()  (GPIOE->BSRR = (uint32_t)GPIO_PIN_7 << 16)
+#define MOTION_TRACE_ADVANCE_ON()  (GPIOE->BSRR = GPIO_PIN_9)
+#define MOTION_TRACE_ADVANCE_OFF() (GPIOE->BSRR = (uint32_t)GPIO_PIN_9 << 16)
+#define MOTION_TRACE_MOVE_ON()     (GPIOE->BSRR = GPIO_PIN_10)
+#define MOTION_TRACE_MOVE_OFF()    (GPIOE->BSRR = (uint32_t)GPIO_PIN_10 << 16)
+#define MOTION_TRACE_SERVO_ON()    (GPIOE->BSRR = GPIO_PIN_12)
+#define MOTION_TRACE_SERVO_OFF()   (GPIOE->BSRR = (uint32_t)GPIO_PIN_12 << 16)
+
+/* Move lifecycle (micromoco.h §4.1): PE10 brackets a whole move, high from
+ * moco_on_move_begin() to moco_on_move_end(). */
 static inline void moco_on_move_begin(struct moco_rig *rig, int32_t seq) {
     (void)rig; (void)seq;
-    GPIOE->BSRR = GPIO_PIN_9;
+    MOTION_TRACE_MOVE_ON();
 }
 static inline void moco_on_move_end(struct moco_rig *rig, int32_t seq) {
     (void)rig; (void)seq;
-    GPIOE->BSRR = (uint32_t)GPIO_PIN_9 << 16;
+    MOTION_TRACE_MOVE_OFF();
 }
-static inline void moco_on_seg_begin(struct moco_rig *rig, int32_t seq, uint8_t seg_idx) {
-    (void)rig; (void)seq; (void)seg_idx;
-    GPIOE->BSRR = GPIO_PIN_10;
+
+/* Per-real-tick chase/retarget (moco__advance_real()) and the ~1kHz ceiling
+ * recompute (moco__servo_cycle()) -- the two halves of moco_rig_update()'s
+ * own work, broken out so their relative cost and timing are visible next
+ * to each other and next to MOTION_TRACE_UPDATE's own span. */
+static inline void moco_on_advance_begin(struct moco_rig *rig) {
+    (void)rig;
+    MOTION_TRACE_ADVANCE_ON();
 }
-static inline void moco_on_seg_end(struct moco_rig *rig, int32_t seq, uint8_t seg_idx) {
-    (void)rig; (void)seq; (void)seg_idx;
-    GPIOE->BSRR = (uint32_t)GPIO_PIN_10 << 16;
+static inline void moco_on_advance_end(struct moco_rig *rig) {
+    (void)rig;
+    MOTION_TRACE_ADVANCE_OFF();
+}
+static inline void moco_on_servo_begin(struct moco_rig *rig) {
+    (void)rig;
+    MOTION_TRACE_SERVO_ON();
+}
+static inline void moco_on_servo_end(struct moco_rig *rig) {
+    (void)rig;
+    MOTION_TRACE_SERVO_OFF();
 }
 
 #define MOCO_ENTER_CRITICAL() mp_uint_t _moco_irq_state = disable_irq()

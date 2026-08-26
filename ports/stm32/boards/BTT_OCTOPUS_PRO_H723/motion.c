@@ -221,16 +221,12 @@ void motion_init(void) {
     motion_timer_refcount = 0;
 }
 
-// Trace pins, for watching the ISR's real timing on a logic analyzer during
-// bring-up. PE7 brackets the whole interrupt, PE15 just the moco_rig_update()
-// calls inside it, so the library's share is visible next to the step and dir
-// edges rather than only as a number. Direct BSRR writes against literal
-// masks: one immediate each, no pointer chasing in the measured region.
-// Both are configured in motion_timer_enable(). Kept until no longer needed.
-#define MOTION_TRACE_ISR_ON()     (GPIOE->BSRR = GPIO_PIN_7)
-#define MOTION_TRACE_ISR_OFF()    (GPIOE->BSRR = (uint32_t)GPIO_PIN_7 << 16)
-#define MOTION_TRACE_UPDATE_ON()  (GPIOE->BSRR = GPIO_PIN_15)
-#define MOTION_TRACE_UPDATE_OFF() (GPIOE->BSRR = (uint32_t)GPIO_PIN_15 << 16)
+// Trace pins (MOTION_TRACE_ISR/UPDATE_ON/OFF -- ADVANCE/MOVE/SERVO fire from
+// inside micromoco.c itself) are all defined in micromoco_cfg.h, alongside
+// the library's own move-lifecycle tracing, so the whole pin assignment
+// lives in one place. PE8 brackets the whole interrupt, PE7 just the
+// moco_rig_update() calls inside it, so the library's share is visible next
+// to the step and dir edges rather than only as a number.
 
 // TIM24 is unused by MicroPython elsewhere on this MCU, so it's free to
 // drive directly.
@@ -311,13 +307,20 @@ static void motion_timer_enable(void) {
         return;
     }
 
-    // Trace pins (MOTION_TRACE_* above) and the cycle counter behind
-    // motion_isr_cycles. mp_hal_ticks_cpu_enable() is idempotent, so it costs
-    // nothing if the application already started CYCCNT for its own use.
+    // Trace pins (MOTION_TRACE_* / moco_on_{advance,servo}_* in
+    // micromoco_cfg.h) and the cycle counter behind motion_isr_cycles.
+    // mp_hal_ticks_cpu_enable() is idempotent, so it costs nothing if the
+    // application already started CYCCNT for its own use.
+    mp_hal_pin_output(pin_E8);
+    mp_hal_pin_low(pin_E8);
     mp_hal_pin_output(pin_E7);
     mp_hal_pin_low(pin_E7);
-    mp_hal_pin_output(pin_E15);
-    mp_hal_pin_low(pin_E15);
+    mp_hal_pin_output(pin_E9);
+    mp_hal_pin_low(pin_E9);
+    mp_hal_pin_output(pin_E10);
+    mp_hal_pin_low(pin_E10);
+    mp_hal_pin_output(pin_E12);
+    mp_hal_pin_low(pin_E12);
     mp_hal_ticks_cpu_enable();
 
     __HAL_RCC_TIM24_CLK_ENABLE();
