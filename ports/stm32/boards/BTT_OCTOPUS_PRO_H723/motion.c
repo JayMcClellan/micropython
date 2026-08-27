@@ -817,7 +817,7 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
 // duration/end speed a call achieved -- achieved state is only meaningful
 // once a move is actually reached.
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_more, ARG_replace };
+    enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_replace };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_target,       MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_duration,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
