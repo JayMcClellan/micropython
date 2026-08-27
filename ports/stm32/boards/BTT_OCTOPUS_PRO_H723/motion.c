@@ -824,12 +824,12 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
     }
 }
 
-// target, duration, cruise_speed, more, go, replace -- see moco_rig_move()'s own doc
+// target, duration, cruise_speed, more, replace -- see moco_rig_move()'s own doc
 // (micromoco.h). There is currently no synchronous way to learn the actual
 // duration/end speed a call achieved -- achieved state is only meaningful
 // once a move is actually reached.
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_more, ARG_go, ARG_replace };
+    enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_more, ARG_replace };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_target,       MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_duration,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
@@ -856,75 +856,6 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_move_obj, 1, motion_rig_move);
-
-// jog()'s roll-ahead distance: far enough to rarely need re-issuing,
-// comfortably below moco_float's ~8.4e6-step single-precision ceiling
-// (moco_design.md SS6.4). Recomputed from the queue-end position on every
-// call rather than compounded, so it can't walk toward an extreme value.
-#define MOTION_JOG_ROLL_AHEAD_STEPS ((moco_float)1000000)
-
-// ...and capped in TIME as well, because a fixed step count is not a bounded
-// span: at a slow jog speed a million steps is hours of cruise, far past the
-// 2^30-tick limit every span has to stay under (moco_design.md SS16), and the
-// move is rejected (or, before that limit was enforced, silently collapsed a
-// fraction of the way in -- the "slow jog moves a little then stops" bug).
-// Well inside the limit at any clock this port runs: 60 s is 3e8 ticks at
-// 5 MHz against a 1.07e9 ceiling. Costs nothing at normal jog speeds, where
-// the step count is the binding cap anyway, and only means the caller's
-// re-issue (motion_coord.py schedules it at half the returned duration) comes
-// around every 30 s instead of less often.
-#define MOTION_JOG_MAX_SPAN_S ((moco_float)60)
-
-static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_channel, ARG_velocity, ARG_replace };
-    static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_channel,  MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_velocity, MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_replace,  MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
-    };
-    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
-    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
-    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
-
-    mp_int_t channel = args[ARG_channel].u_int;
-    motion_channel_check(self, channel);
-    moco_float velocity = mp_obj_get_float_to_f(args[ARG_velocity].u_obj);
-    if (velocity == (moco_float)0) {
-        mp_raise_ValueError(MP_ERROR_TEXT("velocity must be nonzero"));
-    }
-    bool replace = args[ARG_replace].u_bool;
-    moco_float unit_scale;
-    moco_channel_get_scale(&self->rig, channel, &unit_scale, NULL);
-    moco_float speed = (velocity > 0) ? velocity : -velocity;
-    moco_float roll_ahead = MOTION_JOG_ROLL_AHEAD_STEPS * unit_scale;
-    moco_float span_limit = speed * MOTION_JOG_MAX_SPAN_S;
-    if (span_limit < roll_ahead) {
-        roll_ahead = span_limit;
-    }
-
-    moco_float target[MOCO_MAX_CHANNELS];
-    moco_rig_target(&self->rig, target);
-    target[channel] += (velocity > 0) ? roll_ahead : -roll_ahead;
-
-    // A self-committed moco_rig_move() always ends at rest, but with
-    // roll_ahead this large the decel-to-rest phase lands so far past
-    // wherever the caller will actually stop jogging that it never matters
-    // in practice -- this ramps to speed at amax, then cruises (duration<=0
-    // means "as fast as possible", i.e. cruise the whole roll_ahead distance
-    // at `speed`).
-    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed, replace ? MOCO_MOVE_REPLACE : 0u));
-    motion_timer_kick();
-
-    // moco_rig_move() no longer reports achieved duration -- estimate it
-    // directly from what this call itself requested (roll_ahead/speed),
-    // ignoring ramp-up time. Conservative for the caller's own purpose
-    // (motion_coord.py schedules the next jog re-issue partway through
-    // this): a slight overestimate of total duration just means the
-    // re-issue fires slightly later relative to true arrival, never later
-    // than the roll-ahead target itself.
-    return mp_obj_new_float_from_f(roll_ahead / speed);
-}
-static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_jog_obj, 1, motion_rig_jog);
 
 static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_duration, ARG_replace };
@@ -1039,7 +970,6 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_rates), MP_ROM_PTR(&motion_rig_rates_obj) },
     { MP_ROM_QSTR(MP_QSTR_reset_position), MP_ROM_PTR(&motion_rig_reset_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_move), MP_ROM_PTR(&motion_rig_move_obj) },
-    { MP_ROM_QSTR(MP_QSTR_jog), MP_ROM_PTR(&motion_rig_jog_obj) },
     { MP_ROM_QSTR(MP_QSTR_dwell), MP_ROM_PTR(&motion_rig_dwell_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_position), MP_ROM_PTR(&motion_rig_get_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_velocity), MP_ROM_PTR(&motion_rig_get_velocity_obj) },
