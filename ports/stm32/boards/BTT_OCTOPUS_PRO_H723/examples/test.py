@@ -46,7 +46,7 @@ def circle():
         deg_to_end = min(deg, end - deg)
 
         speed = max_speed if deg_to_end > stop_deg else max_speed * deg_to_end / stop_deg
-        rig.move([x - radius, y], cruise_speed=speed, more=deg < end)
+        rig.move([x - radius, y], cruise_speed=speed)
     while rig.is_running():
         pass
 
@@ -65,6 +65,6 @@ def yaw():
         deg_to_end = min(deg, end - deg)
 
         speed = max_speed if deg_to_end > stop_deg else max_speed * deg_to_end / stop_deg
-        rig.move([x - radius, None, y], cruise_speed=speed, more=deg < end)
+        rig.move([x - radius, None, y], cruise_speed=speed)
     while rig.is_running():
         pass

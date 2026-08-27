@@ -900,11 +900,11 @@ static mp_obj_t motion_rig_get_position(size_t n_args, const mp_obj_t *pos_args,
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_get_position_obj, 1, motion_rig_get_position);
 
-static mp_obj_t motion_rig_get_velocity(mp_obj_t self_in) {
+static mp_obj_t motion_rig_get_speed(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    return mp_obj_new_float_from_f(moco_rig_velocity(&self->rig));
+    return mp_obj_new_float_from_f(moco_rig_speed(&self->rig));
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_velocity_obj, motion_rig_get_velocity);
+static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_speed_obj, motion_rig_get_speed);
 
 static mp_obj_t motion_rig_get_queue_free(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
@@ -918,11 +918,11 @@ static mp_obj_t motion_rig_is_running(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_is_running_obj, motion_rig_is_running);
 
-static mp_obj_t motion_rig_is_moving(mp_obj_t self_in) {
+static mp_obj_t motion_rig_channels_moving(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    return mp_obj_new_int_from_uint(moco_rig_is_moving(&self->rig));
+    return mp_obj_new_int_from_uint(moco_rig_channels_moving(&self->rig));
 }
-static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_is_moving_obj, motion_rig_is_moving);
+static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_channels_moving_obj, motion_rig_channels_moving);
 
 static mp_obj_t motion_rig_get_stats(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
@@ -957,10 +957,10 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_move), MP_ROM_PTR(&motion_rig_move_obj) },
     { MP_ROM_QSTR(MP_QSTR_dwell), MP_ROM_PTR(&motion_rig_dwell_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_position), MP_ROM_PTR(&motion_rig_get_position_obj) },
-    { MP_ROM_QSTR(MP_QSTR_get_velocity), MP_ROM_PTR(&motion_rig_get_velocity_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_speed), MP_ROM_PTR(&motion_rig_get_speed_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_queue_free), MP_ROM_PTR(&motion_rig_get_queue_free_obj) },
     { MP_ROM_QSTR(MP_QSTR_is_running), MP_ROM_PTR(&motion_rig_is_running_obj) },
-    { MP_ROM_QSTR(MP_QSTR_is_moving), MP_ROM_PTR(&motion_rig_is_moving_obj) },
+    { MP_ROM_QSTR(MP_QSTR_channels_moving), MP_ROM_PTR(&motion_rig_channels_moving_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_stats), MP_ROM_PTR(&motion_rig_get_stats_obj) },
     { MP_ROM_QSTR(MP_QSTR_clear_stats), MP_ROM_PTR(&motion_rig_clear_stats_obj) },
  };
