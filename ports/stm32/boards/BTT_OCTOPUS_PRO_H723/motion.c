@@ -290,7 +290,7 @@ void TIM24_IRQHandler(void) {
     motion_timer_service();
 }
 
-// Forces prompt re-evaluation after go()/move()/segment()/dwell() may have
+// Forces prompt re-evaluation after move()/segment()/dwell() may have
 // started motion the currently-armed deadline doesn't know about yet (a
 // freshly-idle Rig's own deadline can be ~18 minutes out by default). Never
 // calls moco_rig_update() itself -- only the ISR does, matching its "call
@@ -514,18 +514,6 @@ static void motion_rig_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
         dest[1] = MP_OBJ_SENTINEL;
     }
 }
-
-// Smoke-test bridge: moco_rig_go() is gone under the redesign -- there is no
-// more HALTED/RUNNING gate, the servo cycle just runs unconditionally (see
-// the redesign plan). go() is kept as a callable no-op, purely for API
-// compatibility, rather than removed from the Rig type outright.
-static mp_obj_t motion_rig_go(mp_obj_t self_in) {
-    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    motion_rig_ensure_initialized(self);
-    motion_timer_kick();
-    return mp_const_none;
-}
-static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_go_obj, motion_rig_go);
 
 static mp_obj_t motion_rig_stop(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_ramp_s };
@@ -824,7 +812,7 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
     }
 }
 
-// target, duration, cruise_speed, more, replace -- see moco_rig_move()'s own doc
+// target, duration, cruise_speed, replace -- see moco_rig_move()'s own doc
 // (micromoco.h). There is currently no synchronous way to learn the actual
 // duration/end speed a call achieved -- achieved state is only meaningful
 // once a move is actually reached.
@@ -834,7 +822,6 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
         { MP_QSTR_target,       MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_duration,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_cruise_speed, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_more,         MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
         { MP_QSTR_replace,      MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
@@ -846,7 +833,6 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     motion_parse_target(self, args[ARG_target].u_obj, target);
     moco_float duration = motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0);
     moco_float cruise_speed = motion_get_float_or(args[ARG_cruise_speed].u_obj, (moco_float)0);
-    (void)args[ARG_more].u_bool;
     moco_move_flags flags = args[ARG_replace].u_bool ? MOCO_MOVE_REPLACE : 0u;
 
     motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, flags));
@@ -960,7 +946,6 @@ static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_clear_stats_obj, motion_rig_clear_st
 static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&motion_rig_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&motion_rig_deinit_obj) },
-    { MP_ROM_QSTR(MP_QSTR_go), MP_ROM_PTR(&motion_rig_go_obj) },
     { MP_ROM_QSTR(MP_QSTR_stop), MP_ROM_PTR(&motion_rig_stop_obj) },
     { MP_ROM_QSTR(MP_QSTR_feed_rate), MP_ROM_PTR(&motion_rig_feed_rate_obj) },
     { MP_ROM_QSTR(MP_QSTR_pause), MP_ROM_PTR(&motion_rig_pause_obj) },
