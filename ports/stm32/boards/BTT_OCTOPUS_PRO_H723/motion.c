@@ -835,7 +835,6 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
         { MP_QSTR_duration,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_cruise_speed, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_more,         MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
-        { MP_QSTR_go,           MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
         { MP_QSTR_replace,      MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
@@ -848,7 +847,6 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     moco_float duration = motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0);
     moco_float cruise_speed = motion_get_float_or(args[ARG_cruise_speed].u_obj, (moco_float)0);
     (void)args[ARG_more].u_bool;
-    (void)args[ARG_go].u_bool;
     moco_move_flags flags = args[ARG_replace].u_bool ? MOCO_MOVE_REPLACE : 0u;
 
     motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, flags));
@@ -878,11 +876,11 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_move_obj, 1, motion_rig_move);
 #define MOTION_JOG_MAX_SPAN_S ((moco_float)60)
 
 static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_channel, ARG_velocity, ARG_go };
+    enum { ARG_channel, ARG_velocity, ARG_replace };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_channel,  MP_ARG_REQUIRED | MP_ARG_INT },
         { MP_QSTR_velocity, MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_go,       MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
+        { MP_QSTR_replace,  MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -894,7 +892,7 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     if (velocity == (moco_float)0) {
         mp_raise_ValueError(MP_ERROR_TEXT("velocity must be nonzero"));
     }
-
+    bool replace = args[ARG_replace].u_bool;
     moco_float unit_scale;
     moco_channel_get_scale(&self->rig, channel, &unit_scale, NULL);
     moco_float speed = (velocity > 0) ? velocity : -velocity;
@@ -907,9 +905,6 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     moco_float target[MOCO_MAX_CHANNELS];
     moco_rig_target(&self->rig, target);
     target[channel] += (velocity > 0) ? roll_ahead : -roll_ahead;
-    // Smoke-test bridge: go=False (MOCO_QUEUE_WAIT) has nothing left to map
-    // onto -- see motion_rig_move() above. Accepted, unused.
-    (void)args[ARG_go].u_bool;
 
     // A self-committed moco_rig_move() always ends at rest, but with
     // roll_ahead this large the decel-to-rest phase lands so far past
@@ -917,7 +912,7 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
     // in practice -- this ramps to speed at amax, then cruises (duration<=0
     // means "as fast as possible", i.e. cruise the whole roll_ahead distance
     // at `speed`).
-    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed, 0u));
+    motion_check_status(moco_rig_move(&self->rig, target, (moco_float)0, speed, replace ? MOCO_MOVE_REPLACE : 0u));
     motion_timer_kick();
 
     // moco_rig_move() no longer reports achieved duration -- estimate it
@@ -932,21 +927,19 @@ static mp_obj_t motion_rig_jog(size_t n_args, const mp_obj_t *pos_args, mp_map_t
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_jog_obj, 1, motion_rig_jog);
 
 static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_duration_s, ARG_go };
+    enum { ARG_duration, ARG_replace };
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_duration_s, MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_go,         MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
+        { MP_QSTR_duration, MP_ARG_REQUIRED | MP_ARG_OBJ },
+        { MP_QSTR_replace,  MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
-    moco_float duration_s = mp_obj_get_float_to_f(args[ARG_duration_s].u_obj);
-    // Smoke-test bridge: go=False (MOCO_QUEUE_WAIT) has nothing left to map
-    // onto -- see motion_rig_move() above. Accepted, unused.
-    (void)args[ARG_go].u_bool;
+    moco_float duration = mp_obj_get_float_to_f(args[ARG_duration].u_obj);
+    bool replace = args[ARG_replace].u_bool;
 
-    motion_check_status(moco_rig_dwell(&self->rig, duration_s));
+    motion_check_status(moco_rig_dwell(&self->rig, duration, replace ? MOCO_MOVE_REPLACE : 0u));
     motion_timer_kick();
 
     return mp_const_none;
