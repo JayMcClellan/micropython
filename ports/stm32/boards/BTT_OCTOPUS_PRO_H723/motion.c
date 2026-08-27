@@ -92,7 +92,7 @@ static uint32_t motion_update_cycles, motion_update_cycles_max;
 
 enum {
     STATS_updates, STATS_steps, STATS_seg_completed, STATS_slips, STATS_slip_ticks,
-    STATS_max_late, STATS_floor_hits, STATS_queue_high_water, STATS_errors,
+    STATS_max_late, STATS_floor_hits, STATS_errors,
     STATS_slip, STATS_floor_hit, STATS_clamp_v_flag, STATS_clamp_a_flag,
     STATS_corner_limited_flag, STATS_error, STATS_underrun,
     STATS_isr_cycles, STATS_isr_cycles_max,
@@ -102,7 +102,7 @@ enum {
 
 static const uint16_t motion_stats_field_qstrs[STATS_NUM_FIELDS] = {
     MP_QSTR_updates, MP_QSTR_steps, MP_QSTR_seg_completed, MP_QSTR_slips, MP_QSTR_slip_ticks,
-    MP_QSTR_max_late, MP_QSTR_floor_hits, MP_QSTR_queue_high_water, MP_QSTR_errors,
+    MP_QSTR_max_late, MP_QSTR_floor_hits, MP_QSTR_errors,
     MP_QSTR_slip, MP_QSTR_floor_hit, MP_QSTR_clamp_v_flag, MP_QSTR_clamp_a_flag,
     MP_QSTR_corner_limited_flag, MP_QSTR_error, MP_QSTR_underrun,
     MP_QSTR_isr_cycles, MP_QSTR_isr_cycles_max,
@@ -187,7 +187,6 @@ static void motion_stats_fill(motion_stats_obj_t *self, const moco_stats *c_stat
     self->items[STATS_slip_ticks] = MP_OBJ_NEW_SMALL_INT(0);
     self->items[STATS_max_late] = mp_obj_new_int_from_uint(c_stats->max_late);
     self->items[STATS_floor_hits] = mp_obj_new_int_from_uint(c_stats->floor_hits);
-    self->items[STATS_queue_high_water] = mp_obj_new_int_from_uint(c_stats->queue_high_water);
     self->items[STATS_errors] = mp_obj_new_int_from_uint(c_stats->errors);
     self->items[STATS_slip] = mp_const_false;
     self->items[STATS_floor_hit] = mp_obj_new_bool(c_stats->flags & MOCO_FLAG_FLOOR_HIT);
@@ -825,26 +824,19 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
     }
 }
 
-// target, duration, cruise_speed, more, go -- see moco_rig_move()'s own doc
+// target, duration, cruise_speed, more, go, replace -- see moco_rig_move()'s own doc
 // (micromoco.h). There is currently no synchronous way to learn the actual
 // duration/end speed a call achieved -- achieved state is only meaningful
 // once a move is actually reached.
-//
-// Smoke-test bridge: `more` (MOCO_QUEUE_MORE staging) and `go=False`
-// (MOCO_QUEUE_WAIT) have nothing left to map onto -- streaming waypoints is
-// now just calling this every frame (the redesign plan's own description of
-// what MOCO_QUEUE_MORE dissolves into). moco_rig_move() does take a flags
-// argument again (reserved for future use, currently always 0), but it isn't
-// what `more`/`go` used to mean -- both kwargs are still accepted, for API
-// compatibility, but are inert.
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_more, ARG_go };
+    enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_more, ARG_go, ARG_replace };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_target,       MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_duration,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_cruise_speed, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_more,         MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
         { MP_QSTR_go,           MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
+        { MP_QSTR_replace,      MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -857,8 +849,9 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     moco_float cruise_speed = motion_get_float_or(args[ARG_cruise_speed].u_obj, (moco_float)0);
     (void)args[ARG_more].u_bool;
     (void)args[ARG_go].u_bool;
+    moco_move_flags flags = args[ARG_replace].u_bool ? MOCO_MOVE_REPLACE : 0u;
 
-    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, 0u));
+    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, flags));
 
     motion_timer_kick();
 
@@ -953,7 +946,7 @@ static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map
     // onto -- see motion_rig_move() above. Accepted, unused.
     (void)args[ARG_go].u_bool;
 
-    motion_check_status(moco_rig_queue_dwell(&self->rig, duration_s));
+    motion_check_status(moco_rig_dwell(&self->rig, duration_s));
     motion_timer_kick();
 
     return mp_const_none;
@@ -1005,7 +998,7 @@ static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_velocity_obj, motion_rig_get_vel
 
 static mp_obj_t motion_rig_get_queue_free(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    return mp_obj_new_int(moco_rig_queue_free(&self->rig));
+    return mp_obj_new_int(moco_rig_queue_avail(&self->rig));
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_get_queue_free_obj, motion_rig_get_queue_free);
 
