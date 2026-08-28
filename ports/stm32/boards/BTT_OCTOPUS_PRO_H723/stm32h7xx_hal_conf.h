@@ -15,6 +15,11 @@
 #define HSE_STARTUP_TIMEOUT (5000)
 #define LSE_STARTUP_TIMEOUT (5000)
 
+#define DATA_CACHE_ENABLE           1
+#define INSTRUCTION_CACHE_ENABLE    1
+#define PREFETCH_ENABLE             1
+#define USE_RTOS                    0
+
 #include "boards/stm32h7xx_hal_conf_base.h"
 
 #endif // MICROPY_INCLUDED_STM32H7XX_HAL_CONF_H

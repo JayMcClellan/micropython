@@ -135,27 +135,6 @@ static inline void moco_on_move_end(struct moco_rig *rig, int32_t seq) {
     MOTION_TRACE_MOVE_OFF();
 }
 
-/* Per-real-tick chase/retarget (moco__advance_real()) and the ~1kHz ceiling
- * recompute (moco__servo_cycle()) -- the two halves of moco_rig_update()'s
- * own work, broken out so their relative cost and timing are visible next
- * to each other and next to MOTION_TRACE_UPDATE's own span. */
-static inline void moco_on_advance_begin(struct moco_rig *rig) {
-    (void)rig;
-    MOTION_TRACE_ADVANCE_ON();
-}
-static inline void moco_on_advance_end(struct moco_rig *rig) {
-    (void)rig;
-    MOTION_TRACE_ADVANCE_OFF();
-}
-static inline void moco_on_servo_begin(struct moco_rig *rig) {
-    (void)rig;
-    MOTION_TRACE_SERVO_ON();
-}
-static inline void moco_on_servo_end(struct moco_rig *rig) {
-    (void)rig;
-    MOTION_TRACE_SERVO_OFF();
-}
-
 #define MOCO_ENTER_CRITICAL() mp_uint_t _moco_irq_state = disable_irq()
 #define MOCO_EXIT_CRITICAL()  enable_irq(_moco_irq_state)
 

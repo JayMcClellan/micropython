@@ -33,7 +33,7 @@
 #include "pin.h"
 #include "micromoco.h"
 
-#define MOTION_CLOCK_HZ (5000000)
+#define MOTION_CLOCK_HZ (1000000)
 
 // Seeded once per channel at construction, in raw steps (unit_scale is still
 // 1.0 at that point), so a freshly built Rig can move without an explicit

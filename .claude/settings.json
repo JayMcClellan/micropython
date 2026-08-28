@@ -15,10 +15,16 @@
       "Bash(./build/run_phase2)",
       "Bash(/tmp/debug_corner)",
       "Bash(/tmp/debug_corner2)",
-      "Bash(/tmp/debug_corner3)"
+      "Bash(/tmp/debug_corner3)",
+      "Bash(git stash *)",
+      "Bash(cp tests/test.c /tmp/test.c.bak && sed -i 's|    g_current_suite = name;|    { char b[64]; snprintf\\(b,sizeof b,\"    [checks=%d]\\\\\\\\n\",g_test_stats.checks\\); test_puts\\(b\\); } g_current_suite = name;|' tests/test.c && make test 2>&1 | grep -E \"ok|checks=|PASSED|FAIL\"; cp /tmp/test.c.bak tests/test.c)",
+      "Bash(git checkout *)",
+      "Bash(make build/micromoco.o)",
+      "Bash(SP=\"/c/Users/mccle/AppData/Local/Temp/claude/d--Projects-micropython/b8a96ba9-7ba6-4b87-bc33-c01efbd244c3/scratchpad\" && sed -i 's/2000000.0, 4000000.0/100000.0, 20000000.0/g; s/300000.0, 50000.0/100000.0, 8000000.0/' \"$SP/stagger_check.c\" && cc -std=c99 -Wall -Wextra -O2 -Itests -I. -o \"$SP/stagger_check\" \"$SP/stagger_check.c\" micromoco.c tests/harness.c tests/mock_pin.c tests/mock_alloc.c tests/test.c -lm 2>&1|head && \"$SP/stagger_check\" && echo \"=== make test ===\" && make test 2>&1 | grep -E \"FAIL|PASSED\")"
     ],
     "additionalDirectories": [
-      "\\tmp"
+      "\\tmp",
+      "C:\\Users\\mccle\\AppData\\Local\\Temp\\claude\\d--Projects-micropython\\b8a96ba9-7ba6-4b87-bc33-c01efbd244c3\\scratchpad"
     ]
   }
 }
