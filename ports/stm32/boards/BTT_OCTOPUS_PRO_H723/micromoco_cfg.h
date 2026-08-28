@@ -30,6 +30,13 @@ static inline float moco_hw_sqrtf(float x) {
 }
 #define MOCO_SQRTF(x) moco_hw_sqrtf(x)
 
+// Unlike sqrtf above, fmaxf/fminf have no domain error to preserve errno for,
+// so GCC lowers the builtins straight to VMAXNM.F32/VMINNM.F32 with no libm
+// call regardless of -fno-math-errno -- confirmed in the generated code, not
+// assumed.
+#define MOCO_FMAX(a, b) __builtin_fmaxf((a), (b))
+#define MOCO_FMIN(a, b) __builtin_fminf((a), (b))
+
 // The free-running counter motion.c also samples for moco_rig_update()'s `now`
 // (motion_timer_service()). Read directly rather than passed in, for the two
 // places a real-time obligation to the driver is being met: the pulse-width
