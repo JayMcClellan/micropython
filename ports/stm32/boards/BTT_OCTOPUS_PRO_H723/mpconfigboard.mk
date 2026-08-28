@@ -27,7 +27,7 @@ OPENOCD_CONFIG = boards/BTT_OCTOPUS_PRO_H723/openocd_stm32h7.cfg
 
 # micromoco (experimental)
 CFLAGS += -I$(BOARD_DIR)/lib/micromoco
-SRC_C += $(BOARD_DIR)/lib/micromoco/micromoco.c
+SRC_C += $(BOARD_DIR)/lib/micromoco/micromoco_rt.c $(BOARD_DIR)/lib/micromoco/micromoco_api.c
 
 # The motion ISR is the one hot path on this board; -Os costs it real time for
 # flash savings that do not matter on one file. Everything else stays -Os.
