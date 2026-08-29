@@ -13,8 +13,7 @@
 
 typedef float moco_float;
 
-#define MOCO_PLAN_FALLBACK_US 100
-#define MOCO_PLAN_CHUNK_CHANNELS 8
+#define MOCO_PLAN_MAX_INTERVAL_US 250
 
 // The port's own libm is built for MICROPY_FLOAT_IMPL (double on this
 // board), so it doesn't provide a real sqrtf() symbol -- and __builtin_sqrtf
