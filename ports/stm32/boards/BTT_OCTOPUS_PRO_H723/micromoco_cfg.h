@@ -13,6 +13,9 @@
 
 typedef float moco_float;
 
+#define MOCO_PLAN_FALLBACK_US 100
+#define MOCO_PLAN_CHUNK_CHANNELS 2
+
 // The port's own libm is built for MICROPY_FLOAT_IMPL (double on this
 // board), so it doesn't provide a real sqrtf() symbol -- and __builtin_sqrtf
 // isn't a fix by itself: without -fno-math-errno (not set port-wide), GCC
@@ -128,8 +131,10 @@ static inline void moco_on_dir_change(struct moco_rig *rig, moco_channel_data *d
 #define MOTION_TRACE_ADVANCE_OFF() (GPIOE->BSRR = (uint32_t)GPIO_PIN_9 << 16)
 #define MOTION_TRACE_MOVE_ON()     (GPIOE->BSRR = GPIO_PIN_10)
 #define MOTION_TRACE_MOVE_OFF()    (GPIOE->BSRR = (uint32_t)GPIO_PIN_10 << 16)
-#define MOTION_TRACE_SERVO_ON()    (GPIOE->BSRR = GPIO_PIN_12)
-#define MOTION_TRACE_SERVO_OFF()   (GPIOE->BSRR = (uint32_t)GPIO_PIN_12 << 16)
+#define MOTION_TRACE_PLAN_ON()     (GPIOE->BSRR = GPIO_PIN_12)
+#define MOTION_TRACE_PLAN_OFF()    (GPIOE->BSRR = (uint32_t)GPIO_PIN_12 << 16)
+#define MOTION_TRACE_PLAN_COMPLETE_ON()  (GPIOE->BSRR = GPIO_PIN_13)
+#define MOTION_TRACE_PLAN_COMPLETE_OFF() (GPIOE->BSRR = (uint32_t)GPIO_PIN_13 << 16)
 
 /* Move lifecycle (micromoco.h §4.1): PE10 brackets a whole move, high from
  * moco_on_move_begin() to moco_on_move_end(). */

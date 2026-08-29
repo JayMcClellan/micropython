@@ -33,7 +33,7 @@
 #include "pin.h"
 #include "micromoco.h"
 
-#define MOTION_CLOCK_HZ (1000000)
+#define MOTION_CLOCK_HZ (2000000)
 
 // Seeded once per channel at construction, in raw steps (unit_scale is still
 // 1.0 at that point), so a freshly built Rig can move without an explicit
@@ -232,42 +232,36 @@ void motion_init(void) {
 static void motion_timer_service(void) {
     uint32_t isr_start = DWT->CYCCNT;
     uint32_t update_cycles = 0;
+    uint32_t min_deadline = 0;
+    bool any = false;
     MOTION_TRACE_ISR_ON();
 
     uint32_t now = TIM24->CNT;
-    for (int pass = 0;; pass++) {
-        uint32_t min_deadline = 0;
-        bool any = false;
-        for (motion_rig_obj_t *self = motion_rig_ptr(motion_active_rigs_head); self; self = motion_rig_ptr(self->next_handle)) {
-            if (moco_rig_initialized(&self->rig)) {
-                uint32_t update_start = DWT->CYCCNT;
-                MOTION_TRACE_UPDATE_ON();
-                uint32_t deadline = moco_rig_update(&self->rig, now);
-                MOTION_TRACE_UPDATE_OFF();
-                update_cycles += DWT->CYCCNT - update_start;
-                if (!any || (int32_t)(deadline - min_deadline) < 0) {
-                    min_deadline = deadline;
-                    any = true;
-                }
+    for (motion_rig_obj_t *self = motion_rig_ptr(motion_active_rigs_head); self; self = motion_rig_ptr(self->next_handle)) {
+        if (moco_rig_initialized(&self->rig)) {
+            uint32_t update_start = DWT->CYCCNT;
+            MOTION_TRACE_UPDATE_ON();
+            uint32_t deadline = moco_rig_update(&self->rig, now);
+            MOTION_TRACE_UPDATE_OFF();
+            update_cycles += DWT->CYCCNT - update_start;
+            if (!any || (int32_t)(deadline - min_deadline) < 0) {
+                min_deadline = deadline;
+                any = true;
             }
         }
-        if (!any) {
-            break;
-        }
+    }
 
-        // Arm first, then check: CC matches on equality, so a deadline CNT
-        // crossed after the write is missed until CNT wraps (~14 min at 5MHz).
-        TIM24->CCR1 = min_deadline;
+    if (any) {
         now = TIM24->CNT;
-        if ((int32_t)(now - min_deadline) < 0) {
-            break; // safely armed
+        // Always leave one complete timer tick for the VM before re-entering
+        // this ISR, even when motion already has work due. This batches any
+        // overdue transitions into the next update instead of immediately
+        // starving the application.
+        uint32_t earliest = now + 2u;
+        if ((int32_t)(min_deadline - earliest) < 0) {
+            min_deadline = earliest;
         }
-        // Already passed by the time we finished computing it -- update again
-        // immediately rather than re-entering, up to a limit.
-        if (pass >= 2) {
-            TIM24->EGR = TIM_EGR_CC1G; // force re-entry
-            break;
-        }
+        TIM24->CCR1 = min_deadline;
     }
 
     motion_update_cycles = update_cycles;
@@ -320,6 +314,8 @@ static void motion_timer_enable(void) {
     mp_hal_pin_low(pin_E10);
     mp_hal_pin_output(pin_E12);
     mp_hal_pin_low(pin_E12);
+    mp_hal_pin_output(pin_E13);
+    mp_hal_pin_low(pin_E13);
     mp_hal_ticks_cpu_enable();
 
     __HAL_RCC_TIM24_CLK_ENABLE();

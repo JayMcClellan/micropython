@@ -2,7 +2,7 @@ from machine import Pin
 from motion import Rig
 import math
 
-STEPS_PER_MM = 500
+STEPS_PER_MM = 1000
 VMAX_MM_S = 100.0
 AMAX_MM_S2 = 1000.0
 
