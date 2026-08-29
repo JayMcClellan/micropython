@@ -20,9 +20,7 @@ axes = [
 
 rig = Rig(len(axes), q_depth=20)
 for i, (step_pin, dir_pin) in enumerate(axes):
-    rig.stepper(i, step_pin=step_pin, dir_pin=dir_pin)
-    rig.scale(i, unit_scale=1 / STEPS_PER_MM)
-    rig.rates(i, vmax=VMAX_MM_S, amax=AMAX_MM_S2)
+    rig.stepper(i, step_pin=step_pin, dir_pin=dir_pin, unit_scale= 1/STEPS_PER_MM, vmax=VMAX_MM_S, amax=AMAX_MM_S2)
 
 def yoyo():
   for i in range(10):

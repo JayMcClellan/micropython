@@ -40,9 +40,10 @@
 // 1.0 at that point), so a freshly built Rig can move without an explicit
 // constraints() call. Binding-level convenience only -- moco_rig_init() itself
 // still leaves these at zero (moco_design.md §5.1). If a channel later gets
-// real units via stepper(rotation_distance=...) or scale(), these numbers
+// real units via stepper(unit_scale=...) or scale(), these numbers
 // get reinterpreted in the new units and are almost certainly no longer
-// sensible; call constraints() explicitly whenever real units are in effect.
+// sensible; specify vmax/amax in stepper() or call constraints() explicitly
+// whenever real units are in effect.
 #define MOTION_DEFAULT_VMAX ((moco_float)1000) // steps/sec
 #define MOTION_DEFAULT_AMAX ((moco_float)5000) // steps/sec^2
 
@@ -626,22 +627,22 @@ static moco_pin motion_make_pin(const machine_pin_obj_t *pin, bool active_hi) {
 
 static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum {
-        ARG_channel, ARG_step_pin, ARG_dir_pin, ARG_rotation_distance,
-        ARG_microsteps, ARG_steps_per_rev, ARG_path_scale,
+        ARG_channel, ARG_step_pin, ARG_dir_pin, ARG_unit_scale,
+        ARG_path_scale, ARG_vmax, ARG_amax,
         ARG_pulse_us, ARG_low_min_us, ARG_dir_setup_us, ARG_dir_hold_us,
     };
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_channel,           MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_step_pin,          MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_dir_pin,           MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_rotation_distance, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_microsteps,        MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 1} },
-        { MP_QSTR_steps_per_rev,     MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 200} },
-        { MP_QSTR_path_scale,        MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_pulse_us,          MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_low_min_us,        MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_dir_setup_us,      MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_dir_hold_us,       MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_channel,      MP_ARG_REQUIRED | MP_ARG_INT },
+        { MP_QSTR_step_pin,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
+        { MP_QSTR_dir_pin,      MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
+        { MP_QSTR_unit_scale,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_path_scale,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_vmax,         MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_amax,         MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_pulse_us,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_low_min_us,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_dir_setup_us, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_dir_hold_us,  MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -673,16 +674,16 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
         .dir  = motion_make_pin(dir_pin, dir_hi),
     };
 
-    if (args[ARG_rotation_distance].u_obj != mp_const_none) {
-        mp_int_t microsteps = args[ARG_microsteps].u_int;
-        mp_int_t steps_per_rev = args[ARG_steps_per_rev].u_int;
-        if (microsteps <= 0 || steps_per_rev <= 0) {
-            mp_raise_ValueError(MP_ERROR_TEXT("microsteps and steps_per_rev must be positive"));
-        }
-        moco_float rotation_distance = mp_obj_get_float_to_f(args[ARG_rotation_distance].u_obj);
-        moco_float unit_scale = rotation_distance / (moco_float)(steps_per_rev * microsteps);
+    if (args[ARG_unit_scale].u_obj != mp_const_none || args[ARG_path_scale].u_obj != mp_const_none) {
+        moco_float unit_scale = motion_get_float_or(args[ARG_unit_scale].u_obj, (moco_float)1);
         moco_float path_scale = motion_get_float_or(args[ARG_path_scale].u_obj, (moco_float)1);
         motion_check_status(moco_channel_set_scale(&self->rig, channel, unit_scale, path_scale));
+    }
+
+    if (args[ARG_vmax].u_obj != mp_const_none || args[ARG_amax].u_obj != mp_const_none) {
+        moco_float vmax = motion_get_float_or(args[ARG_vmax].u_obj, MOTION_DEFAULT_VMAX);
+        moco_float amax = motion_get_float_or(args[ARG_amax].u_obj, MOTION_DEFAULT_AMAX);
+        motion_check_status(moco_channel_set_constraints(&self->rig, channel, vmax, amax));
     }
 
     return mp_const_none;
