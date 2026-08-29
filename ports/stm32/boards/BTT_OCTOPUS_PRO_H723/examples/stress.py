@@ -36,7 +36,7 @@ for i, (step_pin, dir_pin) in enumerate(axes):
 
 def yoyo():
   for i in range(10):
-      while rig.get_queue_free() < 1:
+      while rig.queue_avail() < 1:
           pass
       rig.move([100,101,102,103,104,105,106,107])
       rig.move([0,0,0,0,0,0,0,0])

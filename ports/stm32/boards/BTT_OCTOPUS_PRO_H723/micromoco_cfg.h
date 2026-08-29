@@ -13,6 +13,8 @@
 
 typedef float moco_float;
 
+#define MOCO_MAX_CHANNELS 16            /* 32 max */
+
 #define MOCO_PLAN_MAX_INTERVAL_US 250
 
 // The port's own libm is built for MICROPY_FLOAT_IMPL (double on this

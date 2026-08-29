@@ -27,6 +27,7 @@
 #include "py/mphal.h"
 #include "py/misc.h"
 #include "py/objlist.h"
+#include "py/binary.h"
 
 #include "motion.h"
 #include "timer.h"
@@ -37,11 +38,11 @@
 
 // Seeded once per channel at construction, in raw steps (unit_scale is still
 // 1.0 at that point), so a freshly built Rig can move without an explicit
-// rates() call. Binding-level convenience only -- moco_rig_init() itself
+// constraints() call. Binding-level convenience only -- moco_rig_init() itself
 // still leaves these at zero (moco_design.md §5.1). If a channel later gets
 // real units via stepper(rotation_distance=...) or scale(), these numbers
 // get reinterpreted in the new units and are almost certainly no longer
-// sensible; call rates() explicitly whenever real units are in effect.
+// sensible; call constraints() explicitly whenever real units are in effect.
 #define MOTION_DEFAULT_VMAX ((moco_float)1000) // steps/sec
 #define MOTION_DEFAULT_AMAX ((moco_float)5000) // steps/sec^2
 
@@ -353,7 +354,7 @@ static void motion_timer_disable(void) {
 // reports MOCO_ERR_CONFIG on a torn-down rig, which motion_check_status()
 // turns into a MotionError. This exists for the few whose own binding-level
 // work runs first and would otherwise misreport (a channel range of 0..-1) or
-// read a buffer moco_rig_position() declined to fill.
+// read a buffer moco_rig_get_trajectory() declined to fill.
 static void motion_rig_ensure_initialized(motion_rig_obj_t *self) {
     if (!moco_rig_initialized(&self->rig)) {
         mp_raise_msg(&mp_type_MotionError, MP_ERROR_TEXT("Rig is not initialized"));
@@ -446,7 +447,7 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
     self->n_channels = n_channels;
     self->q_depth = q_depth;
     for (mp_int_t i = 0; i < n_channels; i++) {
-        moco_channel_set_limits(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX);
+        moco_channel_set_constraints(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX);
     }
 
     // Append self to the ISR scan list (next_handle already 0: the new tail)
@@ -511,29 +512,17 @@ static void motion_rig_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
     }
 }
 
-static mp_obj_t motion_rig_stop(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_ramp_s };
-    static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_ramp_s, MP_ARG_OBJ, {.u_obj = mp_const_none} },
-    };
-    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
-    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
-    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
-
-    // Smoke-test bridge: ramp_s is accepted (unused) for API compatibility --
-    // moco_rig_stop() no longer takes one. It always decelerates at the
-    // tightest channel's own amax now, never gentler and never instant (see
-    // the redesign plan's "no caller-tunable stop duration" decision).
-    (void)args[ARG_ramp_s].u_obj;
+static mp_obj_t motion_rig_stop(mp_obj_t self_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
     // No-op on a deinitialized rig, so no guard is needed.
     (void)moco_rig_stop(&self->rig);
     motion_timer_kick();
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_stop_obj, 1, motion_rig_stop);
+static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_stop_obj, motion_rig_stop);
 
 // feed_rate()/pause()/resume() -- see micromoco.h. The get/set-in-one shape
-// matches rates()/scale(): called bare it reports, called with a value it
+// matches constraints()/scale(): called bare it reports, called with a value it
 // sets, and either way it returns the rate now in effect.
 //
 // Smoke-test bridge: feed_rate is deferred entirely under the redesign (see
@@ -735,20 +724,12 @@ static mp_obj_t motion_rig_scale(size_t n_args, const mp_obj_t *pos_args, mp_map
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_scale_obj, 1, motion_rig_scale);
 
-// Smoke-test bridge: vjump (a caller-supplied per-move junction speed) is
-// gone under the redesign -- there's no rule-6 junction ceiling yet (see the
-// redesign plan's System rules). vjump= is still accepted/returned here for
-// API compatibility, but it's purely a binding-level echo now: it never
-// reaches moco_channel_set_limits() (2 args now, not 3), and self reports it
-// as always equal to vmax, matching the old default-tracking behavior for
-// the common case where a caller never set it explicitly.
-static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_channel, ARG_vmax, ARG_amax, ARG_vjump };
+static mp_obj_t motion_rig_constraints(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_channel, ARG_vmax, ARG_amax };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_channel, MP_ARG_REQUIRED | MP_ARG_INT },
         { MP_QSTR_vmax,    MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_amax,    MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_vjump,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
@@ -758,7 +739,7 @@ static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map
     motion_channel_check(self, channel);
 
     moco_float vmax, amax;
-    moco_channel_get_limits(&self->rig, channel, &vmax, &amax);
+    moco_channel_get_constraints(&self->rig, channel, &vmax, &amax);
 
     bool changed = false;
     if (args[ARG_vmax].u_obj != mp_const_none) {
@@ -769,17 +750,16 @@ static mp_obj_t motion_rig_rates(size_t n_args, const mp_obj_t *pos_args, mp_map
         amax = mp_obj_get_float_to_f(args[ARG_amax].u_obj);
         changed = true;
     }
-    (void)args[ARG_vjump].u_obj;
     if (changed) {
-        motion_check_status(moco_channel_set_limits(&self->rig, channel, vmax, amax));
+        motion_check_status(moco_channel_set_constraints(&self->rig, channel, vmax, amax));
     }
 
-    mp_obj_t items[] = { mp_obj_new_float_from_f(vmax), mp_obj_new_float_from_f(amax), mp_obj_new_float_from_f(vmax) };
+    mp_obj_t items[] = { mp_obj_new_float_from_f(vmax), mp_obj_new_float_from_f(amax) };
     return mp_obj_new_tuple(MP_ARRAY_SIZE(items), items);
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_rates_obj, 1, motion_rig_rates);
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_constraints_obj, 1, motion_rig_constraints);
 
-static mp_obj_t motion_rig_reset_position(mp_obj_t self_in, mp_obj_t channel_in, mp_obj_t position_in) {
+static mp_obj_t motion_rig_set_channel_position(mp_obj_t self_in, mp_obj_t channel_in, mp_obj_t position_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
     mp_int_t channel = mp_obj_get_int(channel_in);
     motion_channel_check(self, channel);
@@ -787,13 +767,35 @@ static mp_obj_t motion_rig_reset_position(mp_obj_t self_in, mp_obj_t channel_in,
     motion_check_status(moco_channel_set_position(&self->rig, channel, position));
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_3(motion_rig_reset_position_obj, motion_rig_reset_position);
+static MP_DEFINE_CONST_FUN_OBJ_3(motion_rig_set_channel_position_obj, motion_rig_set_channel_position);
+
+// Whole-rig position reset -- unlike set_channel_position() there is no
+// scalar-broadcast form, since setting every channel to the same numeric
+// value rarely makes sense (their unit_scale usually differs).
+static mp_obj_t motion_rig_set_position(mp_obj_t self_in, mp_obj_t position_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    motion_rig_ensure_initialized(self);
+
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(position_in, &len, &items);
+    if (len != (size_t)self->n_channels) {
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("position must have exactly %d entries, got %d"), (int)self->n_channels, (int)len);
+    }
+    moco_float position[MOCO_MAX_CHANNELS];
+    for (mp_int_t i = 0; i < self->n_channels; i++) {
+        position[i] = mp_obj_get_float_to_f(items[i]);
+    }
+    motion_check_status(moco_rig_set_position(&self->rig, position));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(motion_rig_set_position_obj, motion_rig_set_position);
 
 // Parses target (a list/tuple of per-channel values, entries may be None or
 // omitted) into a full n_channels-length array, using
 // last target for every omitted or None entry.
 static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moco_float *target) {
-    moco_rig_target(&self->rig, target);
+    moco_rig_get_destination(&self->rig, target);
 
     size_t len;
     mp_obj_t *items;
@@ -859,42 +861,56 @@ static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_dwell_obj, 1, motion_rig_dwell);
 
-static mp_obj_t motion_rig_get_position(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_result };
+// Validates obj is a writable, float-typed array.array/memoryview ('f' or
+// 'd', whichever matches how moco_float was built) of at least n_channels
+// entries -- rejects a plain list (which has no buffer protocol at all, so
+// mp_get_buffer_raise() does that rejection for us) since only a typed array
+// guarantees the fill below is a raw-value write with no per-element object
+// allocation.
+static void motion_get_float_array(motion_rig_obj_t *self, mp_obj_t obj, mp_buffer_info_t *bufinfo) {
+    mp_get_buffer_raise(obj, bufinfo, MP_BUFFER_RW);
+    if (bufinfo->typecode != 'f' && bufinfo->typecode != 'd') {
+        mp_raise_TypeError(MP_ERROR_TEXT("array must have typecode 'f' or 'd'"));
+    }
+    size_t typesize = mp_binary_get_size('@', bufinfo->typecode, NULL);
+    if (bufinfo->len < (size_t)self->n_channels * typesize) {
+        mp_raise_ValueError(MP_ERROR_TEXT("array must have at least n_channels entries"));
+    }
+}
+
+static mp_obj_t motion_rig_get_trajectory(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_position, ARG_velocity };
     static const mp_arg_t allowed_args[] = {
-        { MP_QSTR_result, MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_position, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_velocity, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
     motion_rig_ensure_initialized(self);
-    moco_float pos[MOCO_MAX_CHANNELS];
-    moco_rig_position(&self->rig, pos);
+    bool want_position = args[ARG_position].u_obj != mp_const_none;
+    bool want_velocity = args[ARG_velocity].u_obj != mp_const_none;
 
-    if (args[ARG_result].u_obj == mp_const_none) {
-        mp_obj_t items[MOCO_MAX_CHANNELS];
+    moco_float pos[MOCO_MAX_CHANNELS], vel[MOCO_MAX_CHANNELS];
+    moco_rig_get_trajectory(&self->rig, want_position ? pos : NULL, want_velocity ? vel : NULL);
+
+    mp_buffer_info_t bufinfo;
+    if (want_position) {
+        motion_get_float_array(self, args[ARG_position].u_obj, &bufinfo);
         for (mp_int_t i = 0; i < self->n_channels; i++) {
-            items[i] = mp_obj_new_float_from_f(pos[i]);
+            mp_binary_set_val_array(bufinfo.typecode, bufinfo.buf, i, mp_obj_new_float_from_f(pos[i]));
         }
-        return mp_obj_new_list(self->n_channels, items);
     }
-
-    if (!mp_obj_is_type(args[ARG_result].u_obj, &mp_type_list)) {
-        mp_raise_TypeError(MP_ERROR_TEXT("result must be a list"));
+    if (want_velocity) {
+        motion_get_float_array(self, args[ARG_velocity].u_obj, &bufinfo);
+        for (mp_int_t i = 0; i < self->n_channels; i++) {
+            mp_binary_set_val_array(bufinfo.typecode, bufinfo.buf, i, mp_obj_new_float_from_f(vel[i]));
+        }
     }
-    size_t len;
-    mp_obj_t *items;
-    mp_obj_list_get(args[ARG_result].u_obj, &len, &items);
-    if (len < (size_t)self->n_channels) {
-        mp_raise_ValueError(MP_ERROR_TEXT("result list must have at least n_channels entries"));
-    }
-    for (mp_int_t i = 0; i < self->n_channels; i++) {
-        items[i] = mp_obj_new_float_from_f(pos[i]);
-    }
-    return args[ARG_result].u_obj;
+    return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_get_position_obj, 1, motion_rig_get_position);
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_get_trajectory_obj, 1, motion_rig_get_trajectory);
 
 static mp_obj_t motion_rig_get_speed(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
@@ -939,6 +955,26 @@ static mp_obj_t motion_rig_clear_stats(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_clear_stats_obj, motion_rig_clear_stats);
 
+// Rig-wide, not per-channel -- unlike scale()/constraints() there is no
+// channel argument.
+static mp_obj_t motion_rig_corner_tol(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_value };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_value, MP_ARG_OBJ, {.u_obj = mp_const_none} },
+    };
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    motion_rig_ensure_initialized(self);
+    if (args[ARG_value].u_obj != mp_const_none) {
+        moco_float value = mp_obj_get_float_to_f(args[ARG_value].u_obj);
+        motion_check_status(moco_rig_set_corner_tol(&self->rig, value));
+    }
+    return mp_obj_new_float_from_f(moco_rig_get_corner_tol(&self->rig));
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_corner_tol_obj, 1, motion_rig_corner_tol);
+
 static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&motion_rig_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&motion_rig_deinit_obj) },
@@ -948,11 +984,13 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_resume), MP_ROM_PTR(&motion_rig_resume_obj) },
     { MP_ROM_QSTR(MP_QSTR_stepper), MP_ROM_PTR(&motion_rig_stepper_obj) },
     { MP_ROM_QSTR(MP_QSTR_scale), MP_ROM_PTR(&motion_rig_scale_obj) },
-    { MP_ROM_QSTR(MP_QSTR_rates), MP_ROM_PTR(&motion_rig_rates_obj) },
-    { MP_ROM_QSTR(MP_QSTR_reset_position), MP_ROM_PTR(&motion_rig_reset_position_obj) },
+    { MP_ROM_QSTR(MP_QSTR_constraints), MP_ROM_PTR(&motion_rig_constraints_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_position), MP_ROM_PTR(&motion_rig_set_position_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_channel_position), MP_ROM_PTR(&motion_rig_set_channel_position_obj) },
+    { MP_ROM_QSTR(MP_QSTR_corner_tol), MP_ROM_PTR(&motion_rig_corner_tol_obj) },
     { MP_ROM_QSTR(MP_QSTR_move), MP_ROM_PTR(&motion_rig_move_obj) },
     { MP_ROM_QSTR(MP_QSTR_dwell), MP_ROM_PTR(&motion_rig_dwell_obj) },
-    { MP_ROM_QSTR(MP_QSTR_get_position), MP_ROM_PTR(&motion_rig_get_position_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_trajectory), MP_ROM_PTR(&motion_rig_get_trajectory_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_speed), MP_ROM_PTR(&motion_rig_get_speed_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_queue_free), MP_ROM_PTR(&motion_rig_get_queue_free_obj) },
     { MP_ROM_QSTR(MP_QSTR_is_running), MP_ROM_PTR(&motion_rig_is_running_obj) },

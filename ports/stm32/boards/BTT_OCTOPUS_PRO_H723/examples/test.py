@@ -26,7 +26,7 @@ for i, (step_pin, dir_pin) in enumerate(axes):
 
 def yoyo():
   for i in range(10):
-      while rig.get_queue_free() < 1:
+      while rig.queue_avail() < 1:
           pass
       rig.move([10,10])
       rig.move([0,0])
@@ -41,7 +41,7 @@ def circle():
         rad = deg * math.pi / 180.0
         x = radius * math.cos(rad)
         y = radius * math.sin(rad)
-        while rig.get_queue_free() < 1:
+        while rig.queue_avail() < 1:
             pass
         deg_to_end = min(deg, end - deg)
 
@@ -60,7 +60,7 @@ def yaw():
         rad = deg * math.pi / 180.0
         x = radius * math.cos(rad)
         y = radius * math.sin(rad)
-        while rig.get_queue_free() < 1:
+        while rig.queue_avail() < 1:
             pass
         deg_to_end = min(deg, end - deg)
 
