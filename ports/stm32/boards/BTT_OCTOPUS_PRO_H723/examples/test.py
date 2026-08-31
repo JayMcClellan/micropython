@@ -48,6 +48,25 @@ def circle():
     while rig.is_running():
         pass
 
+def square(corner_tol = 0.1):
+    side = 10
+    max_speed = VMAX_MM_S
+    rig.corner_tol(corner_tol)
+
+    rig.pause()
+
+    for n in range(4):
+        while rig.queue_avail() < 4:
+            pass
+        rig.move([side, 0], cruise_speed=max_speed)
+        rig.move([side, side], cruise_speed=max_speed)
+        rig.move([0, side], cruise_speed=max_speed)
+        rig.move([0, 0], cruise_speed=max_speed)
+        if n == 0:
+            rig.resume()
+    while rig.is_running():
+        pass
+
 def yaw():
     radius = 10
     stop_deg = 45
