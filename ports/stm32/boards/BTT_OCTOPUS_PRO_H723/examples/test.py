@@ -43,8 +43,8 @@ def circle():
             pass
         deg_to_end = min(deg, end - deg)
 
-        speed = max_speed if deg_to_end > stop_deg else max_speed * deg_to_end / stop_deg
-        rig.move([x - radius, y], cruise_speed=speed)
+        speed = max_speed if deg_to_end > stop_deg else max(max_speed * deg_to_end / stop_deg, 0.01)
+        rig.move([x - radius, y], speed=speed)
     while rig.is_running():
         pass
 
@@ -58,10 +58,10 @@ def square(corner_tol = 0.1):
     for n in range(4):
         while rig.queue_avail() < 4:
             pass
-        rig.move([side, 0], cruise_speed=max_speed)
-        rig.move([side, side], cruise_speed=max_speed)
-        rig.move([0, side], cruise_speed=max_speed)
-        rig.move([0, 0], cruise_speed=max_speed)
+        rig.move([side, 0], speed=max_speed)
+        rig.move([side, side], speed=max_speed)
+        rig.move([0, side], speed=max_speed)
+        rig.move([0, 0], speed=max_speed)
         if n == 0:
             rig.resume()
     while rig.is_running():
@@ -81,7 +81,7 @@ def yaw():
             pass
         deg_to_end = min(deg, end - deg)
 
-        speed = max_speed if deg_to_end > stop_deg else max_speed * deg_to_end / stop_deg
-        rig.move([x - radius, None, y], cruise_speed=speed)
+        speed = max_speed if deg_to_end > stop_deg else max(max_speed * deg_to_end / stop_deg, 0.01)
+        rig.move([x - radius, None, y], speed=speed)
     while rig.is_running():
         pass

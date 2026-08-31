@@ -811,16 +811,17 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
     }
 }
 
-// target, duration, cruise_speed, replace -- see moco_rig_move()'s own doc
+// target, duration, speed, amax, replace -- see moco_rig_move()'s own doc
 // (micromoco.h). There is currently no synchronous way to learn the actual
 // duration/end speed a call achieved -- achieved state is only meaningful
 // once a move is actually reached.
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_target, ARG_duration, ARG_cruise_speed, ARG_replace };
+    enum { ARG_target, ARG_duration, ARG_speed, ARG_amax, ARG_replace };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_target,       MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_duration,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
-        { MP_QSTR_cruise_speed, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_speed,        MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_amax,         MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_replace,      MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
@@ -831,10 +832,11 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     moco_float target[MOCO_MAX_CHANNELS];
     motion_parse_target(self, args[ARG_target].u_obj, target);
     moco_float duration = motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0);
-    moco_float cruise_speed = motion_get_float_or(args[ARG_cruise_speed].u_obj, (moco_float)0);
+    moco_float speed = motion_get_float_or(args[ARG_speed].u_obj, MOCO_HUGE_VAL);
+    moco_float amax = motion_get_float_or(args[ARG_amax].u_obj, MOCO_HUGE_VAL);
     moco_move_flags flags = args[ARG_replace].u_bool ? MOCO_MOVE_REPLACE : 0u;
 
-    motion_check_status(moco_rig_move(&self->rig, target, duration, cruise_speed, flags));
+    motion_check_status(moco_rig_move(&self->rig, target, duration, speed, amax, flags));
 
     motion_timer_kick();
 
