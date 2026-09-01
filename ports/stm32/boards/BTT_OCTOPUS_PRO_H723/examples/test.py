@@ -48,7 +48,7 @@ def circle():
     while rig.is_running():
         pass
 
-def square(corner_tol = 0.1):
+def square(corner_tol = 0.1, amax = None):
     side = 10
     max_speed = VMAX_MM_S
     rig.corner_tol(corner_tol)
@@ -58,10 +58,10 @@ def square(corner_tol = 0.1):
     for n in range(4):
         while rig.queue_avail() < 4:
             pass
-        rig.move([side, 0], speed=max_speed)
-        rig.move([side, side], speed=max_speed)
-        rig.move([0, side], speed=max_speed)
-        rig.move([0, 0], speed=max_speed)
+        rig.move([side, 0], speed=max_speed, amax=amax)
+        rig.move([side, side], speed=max_speed, amax=amax)
+        rig.move([0, side], speed=max_speed, amax=amax)
+        rig.move([0, 0], speed=max_speed, amax=amax)
         if n == 0:
             rig.resume()
     while rig.is_running():

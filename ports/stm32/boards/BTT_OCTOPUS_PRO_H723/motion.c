@@ -68,6 +68,14 @@ static inline motion_rig_obj_t *motion_rig_ptr(intptr_t handle) {
     return (motion_rig_obj_t *)(handle & ~(intptr_t)1);
 }
 
+// Whether this Rig is TIM24-driven (see moco_rig_data / MOCO_NOW() in
+// micromoco_cfg.h). Fixed at construction; not stored again here -- this
+// just reads it back so call sites don't spell out moco_rig_get_data()
+// themselves.
+static inline bool motion_rig_hardware_timer(motion_rig_obj_t *self) {
+    return moco_rig_get_data(&self->rig)->hardware_timer;
+}
+
 // Minimal custom exception surface, per MicroPython's "do a lot with a
 // little": QueueFull/Busy exist because a caller plausibly catches and
 // reacts to them differently (backpressure vs. wait-and-retry); every other
@@ -404,10 +412,11 @@ static void motion_rig_print(const mp_print_t *print, mp_obj_t self_in, mp_print
 }
 
 static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *all_args) {
-    enum { ARG_n_channels, ARG_q_depth };
+    enum { ARG_n_channels, ARG_q_depth, ARG_hardware_timer };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_n_channels, MP_ARG_REQUIRED | MP_ARG_INT },
         { MP_QSTR_q_depth,    MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 4} },
+        { MP_QSTR_hardware_timer,       MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = true} },
     };
     mp_map_t kw_args;
     mp_map_init_fixed_table(&kw_args, n_kw, all_args + n_args);
@@ -416,6 +425,7 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
 
     mp_int_t n_channels = parsed[ARG_n_channels].u_int;
     mp_int_t q_depth = parsed[ARG_q_depth].u_int;
+    bool hardware_timer = parsed[ARG_hardware_timer].u_bool;
     if (!(1 <= n_channels && n_channels <= MOCO_MAX_CHANNELS)) {
         mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("n_channels must be 1 to %d, got %d"), MOCO_MAX_CHANNELS, n_channels);
     }
@@ -451,16 +461,28 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
         moco_channel_set_constraints(&self->rig, i, MOTION_DEFAULT_VMAX, MOTION_DEFAULT_AMAX);
     }
 
-    // Append self to the ISR scan list (next_handle already 0: the new tail)
-    intptr_t *link = &motion_active_rigs_head;
-    while (motion_rig_ptr(*link)) {
-        link = &motion_rig_ptr(*link)->next_handle;
-    }
-    MOCO_ENTER_CRITICAL();
-    *link = ((intptr_t)self) | 1; // set 1 bit in handle so GC ignores it
-    MOCO_EXIT_CRITICAL();
+    // Fixed for this Rig's whole life -- see moco_rig_data / MOCO_NOW() in
+    // micromoco_cfg.h. Set unconditionally (moco_rig_init() never touches its
+    // own opaque `data` block beyond zeroing it with the rest of the struct),
+    // so there's no reliance on which value that zeroing happens to leave.
+    moco_rig_data *data = moco_rig_get_data(&self->rig);
+    data->hardware_timer = hardware_timer;
+    data->soft_now = 0;
 
-    motion_timer_enable();
+    if (hardware_timer) {
+        // Append self to the ISR scan list (next_handle already 0: the new tail).
+        // A soft-timed Rig is never linked here -- motion_timer_service() must
+        // never see it, since its update() calls run on the VM thread instead.
+        intptr_t *link = &motion_active_rigs_head;
+        while (motion_rig_ptr(*link)) {
+            link = &motion_rig_ptr(*link)->next_handle;
+        }
+        MOCO_ENTER_CRITICAL();
+        *link = ((intptr_t)self) | 1; // set 1 bit in handle so GC ignores it
+        MOCO_EXIT_CRITICAL();
+
+        motion_timer_enable();
+    }
 
     return MP_OBJ_FROM_PTR(self);
 }
@@ -468,7 +490,8 @@ static mp_obj_t motion_rig_make_new(const mp_obj_type_t *type, size_t n_args, si
 static mp_obj_t motion_rig_deinit(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
-    // Removes self from the ISR scan list, if it's in there.
+    // Removes self from the ISR scan list, if it's in there (a soft-timed
+    // Rig never was -- this is then just a no-op walk).
     intptr_t *link = &motion_active_rigs_head;
     while (motion_rig_ptr(*link)) {
         if (motion_rig_ptr(*link) == self) {
@@ -481,12 +504,19 @@ static mp_obj_t motion_rig_deinit(mp_obj_t self_in) {
         link = &motion_rig_ptr(*link)->next_handle;
     }
 
+    // Read before moco_rig_deinit() zeroes the struct (data included) --
+    // must match what make_new() acted on, to keep motion_timer_enable()'s
+    // refcount balanced.
+    bool hardware_timer = moco_rig_initialized(&self->rig) && moco_rig_get_data(&self->rig)->hardware_timer;
+
     // moco_rig_deinit() stops the rig, frees its three blocks and zeroes it,
     // so moco_rig_initialized() reads false from here on and every moco_*
     // call this object might still make returns a failure code.
     if (moco_rig_initialized(&self->rig)) {
         moco_rig_deinit(&self->rig);
-        motion_timer_disable();
+        if (hardware_timer) {
+            motion_timer_disable();
+        }
     }
     self->n_channels = 0;
     self->q_depth = 0;
@@ -507,6 +537,10 @@ static void motion_rig_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
         dest[0] = MP_OBJ_NEW_SMALL_INT(self->q_depth);
     } else if (attr == MP_QSTR_initialized) {
         dest[0] = mp_obj_new_bool(moco_rig_initialized(&self->rig));
+    } else if (attr == MP_QSTR_hardware_timer) {
+        dest[0] = mp_obj_new_bool(motion_rig_hardware_timer(self));
+    } else if (attr == MP_QSTR_clock_hz) {
+        dest[0] = mp_obj_new_int_from_uint((mp_uint_t)moco_rig_get_clock_hz(&self->rig));
     } else {
         // Not one of our special attributes; fall back to locals_dict
         dest[1] = MP_OBJ_SENTINEL;
@@ -517,10 +551,30 @@ static mp_obj_t motion_rig_stop(mp_obj_t self_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
     // No-op on a deinitialized rig, so no guard is needed.
     (void)moco_rig_stop(&self->rig);
-    motion_timer_kick();
+    if (motion_rig_hardware_timer(self)) {
+        motion_timer_kick();
+    }
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_stop_obj, motion_rig_stop);
+
+// Soft-timed rigs only (hardware_timer=False at construction) -- advances the rig
+// exactly as one TIM24 compare interrupt would, but paced by the caller
+// instead of hardware. Returns the tick count until update() next wants to
+// be called (always >= 1), mirroring moco_rig_update()'s own contract, so a
+// caller can do `now += rig.update(now)` without ever touching 32-bit wrap.
+static mp_obj_t motion_rig_update(mp_obj_t self_in, mp_obj_t now_in) {
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    motion_rig_ensure_initialized(self);
+    if (motion_rig_hardware_timer(self)) {
+        mp_raise_msg(&mp_type_MotionError, MP_ERROR_TEXT("update() requires hardware_timer=False"));
+    }
+    uint32_t now = (uint32_t)mp_obj_get_int_truncated(now_in);
+    moco_rig_get_data(&self->rig)->soft_now = now;
+    uint32_t deadline = moco_rig_update(&self->rig, now);
+    return mp_obj_new_int_from_uint(deadline - now);
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(motion_rig_update_obj, motion_rig_update);
 
 // feed_rate()/pause()/resume() -- see micromoco.h. The get/set-in-one shape
 // matches constraints()/scale(): called bare it reports, called with a value it
@@ -562,7 +616,9 @@ static mp_obj_t motion_rig_pause(size_t n_args, const mp_obj_t *pos_args, mp_map
     motion_rig_ensure_initialized(self);
     (void)args[ARG_ramp].u_obj;
     motion_check_status(moco_rig_pause(&self->rig));
-    motion_timer_kick();
+    if (motion_rig_hardware_timer(self)) {
+        motion_timer_kick();
+    }
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_pause_obj, 1, motion_rig_pause);
@@ -581,7 +637,9 @@ static mp_obj_t motion_rig_resume(size_t n_args, const mp_obj_t *pos_args, mp_ma
     motion_rig_ensure_initialized(self);
     (void)args[ARG_ramp].u_obj;
     motion_check_status(moco_rig_resume(&self->rig));
-    motion_timer_kick();
+    if (motion_rig_hardware_timer(self)) {
+        motion_timer_kick();
+    }
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_resume_obj, 1, motion_rig_resume);
@@ -625,6 +683,31 @@ static moco_pin motion_make_pin(const machine_pin_obj_t *pin, bool active_hi) {
     return (moco_pin){ .on_addr = bsrr, .on_val = reset_val, .off_addr = bsrr, .off_val = set_val };
 }
 
+// Backing word for a stepper() channel left unwired -- both addresses point
+// here instead of a real BSRR, so moco_on_pos_change()/moco_on_dir_change()
+// still have somewhere harmless to write. One word shared by every such
+// channel; nothing ever reads it back.
+static uint32_t motion_pin_bitbucket;
+static const moco_pin motion_bitbucket_pin = {
+    .on_addr = &motion_pin_bitbucket, .on_val = 1u,
+    .off_addr = &motion_pin_bitbucket, .off_val = 0u,
+};
+
+// Resolves one stepper() pin argument. `mp_const_none` (the pin omitted --
+// always allowed, not just on a soft-timed Rig) yields the scratch pin
+// above; anything else is parsed and configured as a real GPIO output
+// exactly as before.
+static moco_pin motion_resolve_stepper_pin(mp_obj_t obj) {
+    if (obj == mp_const_none) {
+        return motion_bitbucket_pin;
+    }
+    const machine_pin_obj_t *pin;
+    bool active_hi;
+    motion_parse_pin_arg(obj, &pin, &active_hi);
+    motion_ensure_output(pin);
+    return motion_make_pin(pin, active_hi);
+}
+
 static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum {
         ARG_channel, ARG_step_pin, ARG_dir_pin, ARG_unit_scale,
@@ -633,8 +716,8 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
     };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_channel,      MP_ARG_REQUIRED | MP_ARG_INT },
-        { MP_QSTR_step_pin,     MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
-        { MP_QSTR_dir_pin,      MP_ARG_KW_ONLY | MP_ARG_REQUIRED | MP_ARG_OBJ },
+        { MP_QSTR_step_pin,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_dir_pin,      MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_unit_scale,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_path_scale,   MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_vmax,         MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
@@ -661,17 +744,9 @@ static mp_obj_t motion_rig_stepper(size_t n_args, const mp_obj_t *pos_args, mp_m
     moco_float dir_hold_us = motion_get_float_or(args[ARG_dir_hold_us].u_obj, MOCO_DEFAULT_DIR_US);
     motion_check_status(moco_channel_set_timing(&self->rig, channel, pulse_us, low_min_us, dir_setup_us, dir_hold_us));
 
-    const machine_pin_obj_t *step_pin;
-    bool step_hi;
-    motion_parse_pin_arg(args[ARG_step_pin].u_obj, &step_pin, &step_hi);
-    const machine_pin_obj_t *dir_pin;
-    bool dir_hi;
-    motion_parse_pin_arg(args[ARG_dir_pin].u_obj, &dir_pin, &dir_hi);
-    motion_ensure_output(step_pin);
-    motion_ensure_output(dir_pin);
     *moco_channel_get_data(&self->rig, channel) = (moco_channel_data){
-        .step = motion_make_pin(step_pin, step_hi),
-        .dir  = motion_make_pin(dir_pin, dir_hi),
+        .step = motion_resolve_stepper_pin(args[ARG_step_pin].u_obj),
+        .dir  = motion_resolve_stepper_pin(args[ARG_dir_pin].u_obj),
     };
 
     if (args[ARG_unit_scale].u_obj != mp_const_none || args[ARG_path_scale].u_obj != mp_const_none) {
@@ -838,7 +913,9 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
 
     motion_check_status(moco_rig_move(&self->rig, target, duration, speed, amax, flags));
 
-    motion_timer_kick();
+    if (motion_rig_hardware_timer(self)) {
+        motion_timer_kick();
+    }
 
     return mp_const_none;
 }
@@ -858,7 +935,9 @@ static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map
     bool replace = args[ARG_replace].u_bool;
 
     motion_check_status(moco_rig_dwell(&self->rig, duration, replace ? MOCO_MOVE_REPLACE : 0u));
-    motion_timer_kick();
+    if (motion_rig_hardware_timer(self)) {
+        motion_timer_kick();
+    }
 
     return mp_const_none;
 }
@@ -982,6 +1061,7 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&motion_rig_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&motion_rig_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR_stop), MP_ROM_PTR(&motion_rig_stop_obj) },
+    { MP_ROM_QSTR(MP_QSTR_update), MP_ROM_PTR(&motion_rig_update_obj) },
     { MP_ROM_QSTR(MP_QSTR_feed_rate), MP_ROM_PTR(&motion_rig_feed_rate_obj) },
     { MP_ROM_QSTR(MP_QSTR_pause), MP_ROM_PTR(&motion_rig_pause_obj) },
     { MP_ROM_QSTR(MP_QSTR_resume), MP_ROM_PTR(&motion_rig_resume_obj) },

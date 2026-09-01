@@ -41,14 +41,33 @@ static inline float moco_hw_sqrtf(float x) {
 #define MOCO_FMAX(a, b) __builtin_fmaxf((a), (b))
 #define MOCO_FMIN(a, b) __builtin_fminf((a), (b))
 
+// Per-rig, application-owned, opaque to the library (mirrors moco_channel_data
+// below) -- embedded as the first member of moco_rig. `hardware_timer` is set once,
+// at construction (motion.c's make_new()), and never switched afterward: true
+// for the ordinary TIM24-driven Rig, false for one whose update loop is paced
+// entirely by Python calling update() -- see MOCO_NOW() just below. `soft_now`
+// is only meaningful in that false case: the `now` the most recent update()
+// call supplied.
+typedef struct {
+    bool     hardware_timer;
+    uint32_t soft_now;
+} moco_rig_data;
+
 // The free-running counter motion.c also samples for moco_rig_update()'s `now`
-// (motion_timer_service()). Read directly rather than passed in, for the two
-// places a real-time obligation to the driver is being met: the pulse-width
-// wait in a hard stop, and the setup/low-time floor before a rising edge. A
-// floor that expired while the update was computing is then honored at once
-// instead of costing another wake. Trajectory timing still uses `now`, so a
-// single ISR can hold every rig it services to one coherent snapshot.
-#define MOCO_NOW() (TIM24->CNT)
+// (motion_timer_service()). Read directly rather than passed in, for the one
+// place a real-time obligation to the driver is being met: the setup/low-time
+// floor before a rising edge. A floor that expired while the update was
+// computing is then honored at once instead of costing another wake.
+// Trajectory timing still uses `now`, so a single ISR can hold every
+// hardware-timed rig it services to one coherent snapshot.
+//
+// A soft-timed rig (hardware_timer == false) has no live clock to read here at
+// all -- TIM24 may not even be enabled if no hardware Rig exists -- so it
+// falls back to the `now` its own update() call last supplied, which is the
+// only "now" such a rig has. Do not do this for a hardware rig: TIM24->CNT is
+// what charges pulse-width/setup floors against real elapsed processing time,
+// and substituting the update's entry `now` would under-honor them.
+#define MOCO_NOW(rig_data) ((rig_data)->hardware_timer ? (TIM24->CNT) : (rig_data)->soft_now)
 
 // Allocation for moco_rig_init()'s three blocks. m_malloc_maybe(), not
 // m_malloc(): the latter raises MemoryError via nlr_jump on failure, which
