@@ -1,5 +1,6 @@
 from machine import Pin
 from motion import Rig
+from rigsvg import RigSVG
 import math
 
 STEPS_PER_MM = 1000
@@ -66,6 +67,23 @@ def square(corner_tol = 0.1, amax = None):
             rig.resume()
     while rig.is_running():
         pass
+
+
+def svg():
+    rig = Rig(2, q_depth=20, hardware_timer=False)
+    rig.stepper(0, unit_scale=1/1000, vmax=10.0, amax=20.0)
+    rig.stepper(1, unit_scale=1/1000, vmax=10.0, amax=20.0)
+    rig.corner_tol(10)
+
+    f = open("square.svg", "w")
+    svg = RigSVG(rig, f)
+    for _ in range(2):
+        svg.move([100, 0], amax=3.0); 
+        svg.move([100, 100], amax=3.0); 
+        svg.move([0, 100], amax=3.0); 
+        svg.move([0, 0], amax=3.0)
+    svg.close()
+    f.close()
 
 def yaw():
     radius = 10
