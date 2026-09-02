@@ -77,7 +77,7 @@ def svg(side=10, blend = 1):
     rig.stepper(1, unit_scale=1/1000, vmax=10.0, amax=20.0)
     rig.set_position([side/2, 0])
 
-    f = open("square.svg", "w")
+    f = open(f"square_{side}_{blend}.svg", "w")
     svg = RigSVG(rig, f)
     svg.move([side, 0], blend=blend); 
     svg.move([side, side], blend=blend); 
