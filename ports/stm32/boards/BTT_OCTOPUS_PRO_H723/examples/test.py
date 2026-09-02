@@ -1,7 +1,12 @@
+from array import array
+
 from machine import Pin
 from motion import Rig
 from rigsvg import RigSVG
+import gcode
+
 import math
+import micropython
 
 STEPS_PER_MM = 1000
 VMAX_MM_S = 10.0
@@ -49,41 +54,49 @@ def circle():
     while rig.is_running():
         pass
 
-def square(corner_tol = 0.1, amax = None):
-    side = 10
+def square(side=10, blend = 1):
     max_speed = VMAX_MM_S
-    rig.corner_tol(corner_tol)
 
     rig.pause()
 
     for n in range(4):
         while rig.queue_avail() < 4:
             pass
-        rig.move([side, 0], speed=max_speed, amax=amax)
-        rig.move([side, side], speed=max_speed, amax=amax)
-        rig.move([0, side], speed=max_speed, amax=amax)
-        rig.move([0, 0], speed=max_speed, amax=amax)
+        rig.move([side, 0], speed=max_speed, blend=blend)
+        rig.move([side, side], speed=max_speed, blend=blend)
+        rig.move([0, side], speed=max_speed, blend=blend)
+        rig.move([0, 0], speed=max_speed, blend=blend)
         if n == 0:
             rig.resume()
     while rig.is_running():
         pass
 
-
-def svg():
+def svg(side=10, blend = 1):
     rig = Rig(2, q_depth=20, hardware_timer=False)
     rig.stepper(0, unit_scale=1/1000, vmax=10.0, amax=20.0)
     rig.stepper(1, unit_scale=1/1000, vmax=10.0, amax=20.0)
-    rig.corner_tol(10)
+    rig.set_position([side/2, 0])
 
     f = open("square.svg", "w")
     svg = RigSVG(rig, f)
-    for _ in range(2):
-        svg.move([100, 0], amax=3.0); 
-        svg.move([100, 100], amax=3.0); 
-        svg.move([0, 100], amax=3.0); 
-        svg.move([0, 0], amax=3.0)
+    svg.move([side, 0], blend=blend); 
+    svg.move([side, side], blend=blend); 
+    svg.move([0, side], blend=blend); 
+    svg.move([0, 0], blend=blend)
+    svg.move([side/2, 0], blend=blend)
     svg.close()
     f.close()
+
+def gcode_square(rig, side=10, blend=1):
+    start = array('f', [0.0, 0.0])
+    rig.get_trajectory(pos = start)
+    gc = gcode.Parser(rig)
+    gc.parse(f"G64 P{blend}")
+    for _ in range(2):
+        gc.parse(f"G1 X{start[0] + side}"); 
+        gc.parse(f"G1 Y{start[1] + side}"); 
+        gc.parse(f"G1 X{start[0]}"); 
+        gc.parse(f"G1 Y{start[1]}")
 
 def yaw():
     radius = 10

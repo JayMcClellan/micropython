@@ -12,7 +12,6 @@ destination that was commanded. It never closes the stream.
     rig = Rig(2, q_depth=20, hardware_timer=False)
     rig.stepper(0, unit_scale=1/1000, vmax=10.0, amax=20.0)
     rig.stepper(1, unit_scale=1/1000, vmax=10.0, amax=20.0)
-    rig.corner_tol(0.3)
 
     f = open("/flash/square.svg", "w")
     svg = RigSVG(rig, f)
@@ -55,28 +54,23 @@ class RigSVG:
         self.marker_fill = "none"
         self.marker_diameter = 2.0
 
+        self._dot_format = ('<circle cx="%%.4f" cy="%%.4f" r="%.4f" fill="%s" stroke="%s" stroke-width="%.4f" />\n'
+              % (self.marker_diameter / 2.0, self.marker_fill,
+                 self.marker_stroke, self.marker_stroke_width))
+        
         self._write_header()
-
-    @staticmethod
-    @micropython.native
-    def _n(v):
-        s = "%.4f" % v
-        if "." in s:
-            s = s.rstrip("0").rstrip(".")
-        return s
     
-    @micropython.native
     def _write_header(self):
         w = self._out.write
         w('<?xml version="1.0" encoding="UTF-8"?>\n')
         w('<svg xmlns="http://www.w3.org/2000/svg">\n')
         #w('<g transform="scale(1,-1)">\n')
-        w('<path fill="none" stroke="%s" stroke-width="%s" d="'
-          % (self.path_stroke, self._n(self.path_stroke_width)))
+        w('<path fill="none" stroke="%s" stroke-width="%.4f" d="'
+          % (self.path_stroke, self.path_stroke_width))
 
         self._rig.get_trajectory(position=self._pos)
         xy = (self._pos[0], self._pos[1])
-        w("M%s %s" % (self._n(xy[0]), self._n(xy[1])))
+        w("M%.4f %.4f" % (xy[0], xy[1]))
         self._last = xy
         self._dest_xy = xy
 
@@ -87,7 +81,7 @@ class RigSVG:
         y = self._pos[1]
         lx, ly = self._last
         if abs(x - lx) > self.epsilon or abs(y - ly) > self.epsilon:
-            self._out.write("L%s %s" % (self._n(x), self._n(y)))
+            self._out.write("L%.4f %.4f" % (x, y))
             self._last = (x, y)
 
     @micropython.native
@@ -141,10 +135,7 @@ class RigSVG:
         w = self._out.write
         w('" />\n')
 
-        r = self._n(self.marker_diameter / 2.0)
         for x, y in self._dests:
-            w('<circle cx="%s" cy="%s" r="%s" fill="%s" stroke="%s" stroke-width="%s" />\n'
-              % (self._n(x), self._n(y), r, self.marker_fill,
-                 self.marker_stroke, self._n(self.marker_stroke_width)))
+            w(self._dot_format % (x, y))
 
         w("</g>\n</svg>\n")

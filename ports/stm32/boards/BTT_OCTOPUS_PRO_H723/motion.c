@@ -892,17 +892,18 @@ static void motion_parse_target(motion_rig_obj_t *self, mp_obj_t target_obj, moc
     }
 }
 
-// target, duration, speed, amax, replace -- see moco_rig_move()'s own doc
-// (micromoco.h). There is currently no synchronous way to learn the actual
+// target, duration, speed, amax, blend, replace -- see moco_rig_move()'s own
+// doc (micromoco.h). There is currently no synchronous way to learn the actual
 // duration/end speed a call achieved -- achieved state is only meaningful
 // once a move is actually reached.
 static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_target, ARG_duration, ARG_speed, ARG_amax, ARG_replace };
+    enum { ARG_target, ARG_duration, ARG_speed, ARG_amax, ARG_blend, ARG_replace };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_target,       MP_ARG_REQUIRED | MP_ARG_OBJ },
         { MP_QSTR_duration,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_speed,        MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_amax,         MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_blend,        MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
         { MP_QSTR_replace,      MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
     };
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
@@ -915,9 +916,10 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     moco_float duration = motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0);
     moco_float speed = motion_get_float_or(args[ARG_speed].u_obj, MOCO_HUGE_VAL);
     moco_float amax = motion_get_float_or(args[ARG_amax].u_obj, MOCO_HUGE_VAL);
+    moco_float blend = motion_get_float_or(args[ARG_blend].u_obj, (moco_float)0);
     moco_move_flags flags = args[ARG_replace].u_bool ? MOCO_MOVE_REPLACE : 0u;
 
-    motion_check_status(moco_rig_move(&self->rig, target, duration, speed, amax, flags));
+    motion_check_status(moco_rig_move(&self->rig, target, duration, speed, amax, blend, flags));
 
     if (motion_rig_hardware_timer(self)) {
         motion_timer_kick();
@@ -1044,8 +1046,9 @@ static mp_obj_t motion_rig_clear_stats(mp_obj_t self_in) {
 static MP_DEFINE_CONST_FUN_OBJ_1(motion_rig_clear_stats_obj, motion_rig_clear_stats);
 
 // Rig-wide, not per-channel -- unlike scale()/constraints() there is no
-// channel argument.
-static mp_obj_t motion_rig_corner_tol(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+// channel argument. The square-corner velocity: the speed an unblended
+// right-angle corner is taken at (per-move `blend` rounds a specific corner).
+static mp_obj_t motion_rig_corner_vel(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_value };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_value, MP_ARG_OBJ, {.u_obj = mp_const_none} },
@@ -1057,11 +1060,11 @@ static mp_obj_t motion_rig_corner_tol(size_t n_args, const mp_obj_t *pos_args, m
     motion_rig_ensure_initialized(self);
     if (args[ARG_value].u_obj != mp_const_none) {
         moco_float value = mp_obj_get_float_to_f(args[ARG_value].u_obj);
-        motion_check_status(moco_rig_set_corner_tol(&self->rig, value));
+        motion_check_status(moco_rig_set_corner_vel(&self->rig, value));
     }
-    return mp_obj_new_float_from_f(moco_rig_get_corner_tol(&self->rig));
+    return mp_obj_new_float_from_f(moco_rig_get_corner_vel(&self->rig));
 }
-static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_corner_tol_obj, 1, motion_rig_corner_tol);
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_corner_vel_obj, 1, motion_rig_corner_vel);
 
 static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&motion_rig_deinit_obj) },
@@ -1076,7 +1079,7 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_constraints), MP_ROM_PTR(&motion_rig_constraints_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_position), MP_ROM_PTR(&motion_rig_set_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_channel_position), MP_ROM_PTR(&motion_rig_set_channel_position_obj) },
-    { MP_ROM_QSTR(MP_QSTR_corner_tol), MP_ROM_PTR(&motion_rig_corner_tol_obj) },
+    { MP_ROM_QSTR(MP_QSTR_corner_vel), MP_ROM_PTR(&motion_rig_corner_vel_obj) },
     { MP_ROM_QSTR(MP_QSTR_move), MP_ROM_PTR(&motion_rig_move_obj) },
     { MP_ROM_QSTR(MP_QSTR_dwell), MP_ROM_PTR(&motion_rig_dwell_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_trajectory), MP_ROM_PTR(&motion_rig_get_trajectory_obj) },

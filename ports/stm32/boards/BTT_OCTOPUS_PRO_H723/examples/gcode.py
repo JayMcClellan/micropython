@@ -57,23 +57,23 @@ DEFAULT_SPEED = 1000.0 / 60.0   # mm/sec, used for G0 and G1 until an F word set
 POLL_MS = const(1)                        # spin interval while waiting on the rig
 READY_SLOTS = const(2)                 # ready once queue_avail() exceeds this
 
-_CH_SEMICOLON = const(ord(";"))
-_CH_PAREN1 = const(ord("("))
-_CH_PAREN2 = const(ord(")"))
-_CH_SPACE = const(ord(" "))
-_CH_CR = const(ord("\r"))
-_CH_LF = const(ord("\n"))
-_CH_0 = const(ord("0"))
-_CH_9 = const(ord("9"))
-_CH_A = const(ord("A"))
-_CH_F = const(ord("F"))
-_CH_P = const(ord("P"))
-_CH_S = const(ord("S"))
-_CH_Z = const(ord("Z"))
-_CH_a = const(ord("a"))
-_CH_z = const(ord("z"))
-_CH_DOT = const(ord("."))
-_CH_MINUS = const(ord("-"))
+_CH_SEMICOLON = ord(";")
+_CH_PAREN1 = ord("(")
+_CH_PAREN2 = ord(")")
+_CH_SPACE = ord(" ")
+_CH_CR = ord("\r")
+_CH_LF = ord("\n")
+_CH_0 = ord("0")
+_CH_9 = ord("9")
+_CH_A = ord("A")
+_CH_F = ord("F")
+_CH_P = ord("P")
+_CH_S = ord("S")
+_CH_Z = ord("Z")
+_CH_a = ord("a")
+_CH_z = ord("z")
+_CH_DOT = ord(".")
+_CH_MINUS = ord("-")
 
 class Tokenizer:
     def start(self, line):
@@ -144,6 +144,7 @@ class Parser:
         self._axis_ix = {ord(c): i for i, c in enumerate(axes[:self._naxes])}
         self._target = [None] * self._naxes                    # scratch for _linear()/_G92()
         self.linear_speed = [DEFAULT_SPEED, DEFAULT_SPEED]        # mm/sec
+        self.blend = None
         self.line_no = 0
         self._tokenizer = Tokenizer()
         self._state = PARSER_OK
@@ -259,7 +260,7 @@ class Parser:
     def _linear(self, mode):
         """ Linear move; mode 0 = rapid, 1 = controlled """
         if self._read_axes(mode):
-            self._rig.move(self._target, speed=self.linear_speed[mode])
+            self._rig.move(self._target, speed=self.linear_speed[mode], blend=self.blend)
 
     def _G4(self):
         """ Dwell for a specified time (P = milliseconds, S = seconds) """
@@ -275,6 +276,15 @@ class Parser:
 
     def _G21(self):
         """ Set units to millimeters (ignored) """
+        self._no_more_keys()
+
+    def _G64(self):
+        """ Set path blending """
+        key = self._tokenizer.key()
+        if key == _CH_P:
+            self.blend = self._tokenizer.value()
+        else:
+            raise ValueError("G64 requires P (blend value)")
         self._no_more_keys()
 
     def _G90(self):
