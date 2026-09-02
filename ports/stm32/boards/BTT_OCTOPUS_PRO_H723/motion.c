@@ -847,7 +847,10 @@ static MP_DEFINE_CONST_FUN_OBJ_3(motion_rig_set_channel_position_obj, motion_rig
 
 // Whole-rig position reset -- unlike set_channel_position() there is no
 // scalar-broadcast form, since setting every channel to the same numeric
-// value rarely makes sense (their unit_scale usually differs).
+// value rarely makes sense (their unit_scale usually differs). A short list
+// or a None entry leaves that channel's current position untouched (seeded
+// from moco_rig_get_trajectory(), per micromoco.h), so a G92-style
+// "set just these axes" caller can pass only what it means to change.
 static mp_obj_t motion_rig_set_position(mp_obj_t self_in, mp_obj_t position_in) {
     motion_rig_obj_t *self = MP_OBJ_TO_PTR(self_in);
     motion_rig_ensure_initialized(self);
@@ -855,12 +858,15 @@ static mp_obj_t motion_rig_set_position(mp_obj_t self_in, mp_obj_t position_in) 
     size_t len;
     mp_obj_t *items;
     mp_obj_get_array(position_in, &len, &items);
-    if (len != (size_t)self->n_channels) {
-        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("position must have exactly %d entries, got %d"), (int)self->n_channels, (int)len);
+    if (len > (size_t)self->n_channels) {
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("position must have at most %d entries, got %d"), (int)self->n_channels, (int)len);
     }
     moco_float position[MOCO_MAX_CHANNELS];
+    moco_rig_get_trajectory(&self->rig, position, NULL);
     for (mp_int_t i = 0; i < self->n_channels; i++) {
-        position[i] = mp_obj_get_float_to_f(items[i]);
+        if ((size_t)i < len && items[i] != mp_const_none) {
+            position[i] = mp_obj_get_float_to_f(items[i]);
+        }
     }
     motion_check_status(moco_rig_set_position(&self->rig, position));
     return mp_const_none;

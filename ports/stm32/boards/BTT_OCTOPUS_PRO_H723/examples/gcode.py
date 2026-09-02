@@ -2,24 +2,37 @@
 
 Supported now:
 
-    G0 / G1   linear move   -- axis words (XYZABCUVW) + optional F
-    G4        dwell         -- P milliseconds or S seconds
-    M400      wait for all queued motion to finish
+    G0 / G1       linear move   -- axis words (XYZABCUVW) + optional F
+    G4            dwell         -- P milliseconds or S seconds
+    G92           set position  -- axis words; unnamed axes keep their value
+    G21/G90/G94   no-ops        -- mm / absolute / feed-per-minute (already assumed)
+    M0 / M1       pause         -- rig.pause();  state -> PARSER_PAUSED
+    M24           resume        -- rig.resume(); state -> PARSER_OK
+    M2 / M30      program end    -- wait for motion; state -> PARSER_ENDED
+    M112          stop          -- rig.stop();   state -> PARSER_STOPPED
+    M400          wait for all queued motion to finish
 
 A non-blank line must start with one of those codes; everything after it is that
 code's arguments, in any order, and an argument the code doesn't accept is an
 error. Axis letters map to Rig channels 0.. in the order of the `axes` string
 (default "XYZABCUVW"); the axis count is min(len(axes), rig.n_channels) and any
-extra characters in `axes` are ignored. Only G0/G1 take axis words. Blank lines
-and comments (`; ...` and `( ... )`) are skipped.
+extra characters in `axes` are ignored. Only G0/G1/G92 take axis words. Blank
+lines and comments (`; ...` and `( ... )`) are skipped.
 N line numbers and `*` checksums are not supported.
 
-Each code is handled by a method named exactly like the code (G0, G4, M400),
-looked up by name, so adding a code is just adding a method.
+Each code is handled by a method named `_<code>` (e.g. `_G0`, `_M400`), looked
+up by name, so adding a code is just adding a method.
 
 Feed rate F is mm/min and is passed to rig.move() as speed = F / 60, so the
 rig's channels are assumed to be scaled to millimetres. G0 and G1 keep separate
 stored speeds (self.linear_speed[0] and [1]).
+
+state() returns PARSER_OK / PARSER_PAUSED / PARSER_STOPPED / PARSER_ENDED /
+PARSER_ERROR. It is advisory only -- the parser never changes what it does based
+on it; a caller polls it between lines to decide whether to keep feeding. PAUSED
+(M0/M1) is cleared by M24; ENDED (M2/M30) and STOPPED (M112) are terminal; ERROR
+is set when a line raises and cleared by the next line. start() resets the state
+and the line counter for a new program.
 
     import gcode
 
@@ -30,10 +43,10 @@ stored speeds (self.linear_speed[0] and [1]).
     gc.parse("G1 X10 Y20 Z0")
     gc.parse("G4 P500 (dwell 0.5 s)")
     gc.parse("M400")
-    gc.finish()
+    gc.wait_finish()
 
-parse() blocks until the rig can take another line. For cooperative code use
-AsyncParser, whose parse()/finish() are coroutines.
+parse() blocks until the rig can take another line. For cooperative code the same
+Parser offers coroutine equivalents: parse_async(), await_ready(), await_finish().
 """
 
 import time
@@ -71,7 +84,7 @@ class Tokenizer:
         key = self.key()
         if key is None:
             return None
-        return chr(key) + str(self.value(False))
+        return "_" + chr(key) + str(self.value(False))
     
     def key(self):
         b = self._bytes
@@ -116,6 +129,12 @@ class Tokenizer:
                 pass
         raise ValueError("Expected a numeric value at position %d" % start)
 
+PARSER_OK = const(0)
+PARSER_PAUSED = const(1)
+PARSER_STOPPED = const(2)
+PARSER_ENDED = const(3)
+PARSER_ERROR = const(-1)
+
 class Parser:
     def __init__(self, rig, *, axes="XYZABCUVW"):
         self._rig = rig
@@ -123,35 +142,68 @@ class Parser:
         # `axes` are ignored.
         self._naxes = min(len(axes), rig.n_channels)
         self._axis_ix = {ord(c): i for i, c in enumerate(axes[:self._naxes])}
-        self._target = [None] * self._naxes                      # reused by _linear()
+        self._target = [None] * self._naxes                    # scratch for _linear()/_G92()
         self.linear_speed = [DEFAULT_SPEED, DEFAULT_SPEED]        # mm/sec
         self.line_no = 0
         self._tokenizer = Tokenizer()
+        self._state = PARSER_OK
 
     # --- flow control ----------------------------------------------------
 
+    def start(self):
+        """Start a new program. Resets the line counter and parser state."""
+        self.line_no = 0
+        self._state = PARSER_OK
+
+    def state(self):
+        """Return the current parser state."""
+        return self._state
+    
     def ready(self):
+        """Return True if the rig is ready to accept more commands."""
         return self._rig.queue_avail() > READY_SLOTS
 
     def wait_ready(self):
+        """Block until the rig is ready to accept more commands."""
         while not self.ready():
             time.sleep_ms(POLL_MS)
 
+    async def await_ready(self):
+        """Asynchronously wait until the rig is ready to accept more commands."""
+        while not self.ready():
+            await asyncio.sleep_ms(POLL_MS)
+
     def wait_finish(self):
+        """Block until the rig has finished all motion."""
         while self._rig.is_running():
             time.sleep_ms(POLL_MS)
+
+    async def await_finish(self):
+        """Asynchronously wait until the rig has finished all motion."""
+        while self._rig.is_running():
+            await asyncio.sleep_ms(POLL_MS)
 
     # --- parsing -------------------------------------------------------
 
     def parse(self, line):
+        """Parse and execute one line. Blocks until the rig is ready and, if necessary, until motion finishes."""
         self.wait_ready()
         if self.execute(line):
             self.wait_finish()
 
+    async def parse_async(self, line):
+        """Asynchronously parse and execute one line. Awaits until the rig is ready and, if necessary, until motion finishes."""
+        await self.await_ready()
+        if self.execute(line):
+            await self.await_finish()
+
     def execute(self, line):
-        """Interpret one line. Non-blocking. Returns True iff the line asked to
-        wait for motion to finish (M400), which parse() then honours."""
+        """Interpret one line. Non-blocking (queues motion, never waits). Returns
+        True iff the line asked to wait for motion to finish (M400 / M2 / M30),
+        which parse() / parse_async() then honour."""
         self.line_no += 1
+        if self._state == PARSER_ERROR:      # a fresh line retries after an error
+            self._state = PARSER_OK
         try:
             self._tokenizer.start(line)
             command = self._tokenizer.command()
@@ -159,24 +211,35 @@ class Parser:
                 return False
             handler = getattr(self, command, None)
             if handler is None:
-                raise ValueError("unsupported %s" % command)
+                raise ValueError("unsupported %s" % command[1:])
             return bool(handler())
         except ValueError as e:
+            self._state = PARSER_ERROR
             # Syntax errors (Tokenizer, _key_err, the raises below) and a
             # non-ascii line (UnicodeError subclasses ValueError) get the line
-            # number attached. A rig exception -- MotionError etc. -- is a
-            # RuntimeError subclass and propagates untouched.
+            # number attached. A rig exception (MotionError etc.) is a
+            # RuntimeError subclass, so it skips this handler, keeps its type,
+            # and is only flagged PARSER_ERROR by the one below.
             raise ValueError("line %d: %s" % (self.line_no, e))
+        except Exception:
+            self._state = PARSER_ERROR
+            raise
 
     # --- code handlers ------------------------------------------------
 
-    def G0(self):
+    def _G0(self):
+        """ Linear rapid move """
         self._linear(0)
 
-    def G1(self):
+    def _G1(self):
+        """ Linear controlled move """
         self._linear(1)
 
-    def _linear(self, mode):
+    def _read_axes(self, mode=None):
+        """Clear self._target, then read the remaining words into it: each axis
+        word into its channel slot, and -- only when `mode` is given -- an F
+        word into self.linear_speed[mode]. Any other key is an error. Returns
+        True if at least one axis word was seen."""
         target = self._target
         for i in range(self._naxes):
             target[i] = None
@@ -184,18 +247,22 @@ class Parser:
         while True:
             key = self._tokenizer.key()
             if key is None:
-                break
+                return have_axis
             if key in self._axis_ix:
                 target[self._axis_ix[key]] = self._tokenizer.value()
                 have_axis = True
-            elif key == _CH_F:
+            elif mode is not None and key == _CH_F:
                 self.linear_speed[mode] = self._tokenizer.value() / 60.0
             else:
                 raise self._key_err(key)
-        if have_axis:
-            self._rig.move(target, speed=self.linear_speed[mode])
 
-    def G4(self):
+    def _linear(self, mode):
+        """ Linear move; mode 0 = rapid, 1 = controlled """
+        if self._read_axes(mode):
+            self._rig.move(self._target, speed=self.linear_speed[mode])
+
+    def _G4(self):
+        """ Dwell for a specified time (P = milliseconds, S = seconds) """
         key = self._tokenizer.key()
         if key == _CH_S:
             secs = self._tokenizer.value()
@@ -206,7 +273,58 @@ class Parser:
         self._no_more_keys()
         self._rig.dwell(secs)
 
-    def M400(self):
+    def _G21(self):
+        """ Set units to millimeters (ignored) """
+        self._no_more_keys()
+
+    def _G90(self):
+        """ Set to absolute positioning (ignored) """
+        self._no_more_keys()
+
+    def _G92(self):
+        """ Set current position for named axes; unnamed axes keep their value.
+        Best issued when idle -- precede with M400 if mid-program. """
+        if self._read_axes():
+            self._rig.set_position(self._target)
+
+    def _G94(self):
+        """ Set to feedrate per minute mode (ignored) """
+        self._no_more_keys()
+
+    def _M0(self):
+        """ Program pause """
+        self._no_more_keys()
+        self._rig.pause()
+        self._state = PARSER_PAUSED
+
+    def _M1(self):
+        """ Optional stop (treated as M0) """
+        return self._M0()
+
+    def _M2(self):
+        """ Program end """
+        self._no_more_keys()
+        self._state = PARSER_ENDED
+        return True # True means wait for motion to finish
+        
+    def _M24(self):
+        """ Program resume """
+        self._no_more_keys()
+        self._rig.resume()
+        self._state = PARSER_OK
+
+    def _M30(self):
+        """ Program end """
+        return self._M2()
+
+    def _M112(self):
+        """ Stop """
+        self._no_more_keys()
+        self._rig.stop()
+        self._state = PARSER_STOPPED
+    
+    def _M400(self):
+        """ Wait for all motion to finish """
         self._no_more_keys()
         return True # True means wait for motion to finish
 
@@ -217,23 +335,3 @@ class Parser:
 
     def _key_err(self, key):
         return ValueError("unexpected key %s" % chr(key))
-
-class AsyncParser(Parser):
-    """Asynchronous Parser: parse()/wait_ready()/wait_finish() are coroutines that
-    yield to the event loop instead of blocking."""
-
-    async def parse(self, line):
-        await self.wait_ready()
-        if self.execute(line):
-            await self.wait_finish()
-
-    async def wait_ready(self):
-        while not self.ready():
-            await asyncio.sleep_ms(POLL_MS)
-
-    async def wait_finish(self):
-        while self._rig.is_running():
-            await asyncio.sleep_ms(POLL_MS)
-
-
-
