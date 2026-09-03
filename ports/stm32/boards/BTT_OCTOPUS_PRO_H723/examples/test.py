@@ -87,6 +87,21 @@ def svg(side=10, blend = 1):
     svg.close()
     f.close()
 
+def arcs(radius=10, segments=24):
+    rig = Rig(2, q_depth=40, hardware_timer=False)
+    rig.stepper(0, unit_scale=1/1000, vmax=10.0, amax=20.0)
+    rig.stepper(1, unit_scale=1/1000, vmax=10.0, amax=20.0)
+    rig.set_position([radius, 0])
+
+    f = open(f"circle_{radius}_{segments}.svg", "w")
+    svg = RigSVG(rig, f)
+    # Two CCW semicircles about the origin: (r,0) over the top to (-r,0),
+    # then under the bottom back to (r,0). The joins are tangent, no blend.
+    svg.arc([-radius, 0], radius, ccw=True, segments=segments)
+    svg.arc([radius, 0], radius, ccw=True, segments=segments)
+    svg.close()
+    f.close()
+
 def gcode_square(rig, side=10, blend=1):
     start = array('f', [0.0, 0.0])
     rig.get_trajectory(pos = start)

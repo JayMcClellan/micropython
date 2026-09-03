@@ -12,6 +12,7 @@
 #include "py/mphal.h" // pulls in mp_uint_t, CMSIS intrinsics, and irq.h
 
 typedef float moco_float;
+#define MOCO_FLOAT_IMPL 1              // float family (sinf/cosf/acosf, chosen in micromoco.h)
 
 #define MOCO_MAX_CHANNELS 16            /* 32 max */
 
@@ -33,6 +34,15 @@ static inline float moco_hw_sqrtf(float x) {
     return result;
 }
 #define MOCO_SQRTF(x) moco_hw_sqrtf(x)
+
+// Same missing-symbol story as sqrtf for the transcendentals micromoco uses at
+// enqueue time (arc synthesis, moco_rig_move()): the port's libm has no
+// sinf/cosf/acosf. These run a handful of times per arc, off the ISR, so route
+// them through the double forms rather than pulling in CMSIS-DSP; swap to
+// arm_sin_f32/arm_cos_f32 (+ an acos poly) only if arc enqueue ever profiles hot.
+#define MOCO_SINF(x)  ((float)sin((double)(x)))
+#define MOCO_COSF(x)  ((float)cos((double)(x)))
+#define MOCO_ACOSF(x) ((float)acos((double)(x)))
 
 // Unlike sqrtf above, fmaxf/fminf have no domain error to preserve errno for,
 // so GCC lowers the builtins straight to VMAXNM.F32/VMINNM.F32 with no libm

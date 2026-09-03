@@ -913,13 +913,16 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     motion_rig_ensure_initialized(self);
     moco_float target[MOCO_MAX_CHANNELS];
     motion_parse_target(self, args[ARG_target].u_obj, target);
-    moco_float duration = motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0);
-    moco_float speed = motion_get_float_or(args[ARG_speed].u_obj, MOCO_HUGE_VAL);
-    moco_float amax = motion_get_float_or(args[ARG_amax].u_obj, MOCO_HUGE_VAL);
-    moco_float blend = motion_get_float_or(args[ARG_blend].u_obj, (moco_float)0);
-    moco_move_flags flags = args[ARG_replace].u_bool ? MOCO_MOVE_REPLACE : 0u;
 
-    motion_check_status(moco_rig_move(&self->rig, target, duration, speed, amax, blend, flags));
+    moco_move mv;
+    moco_move_init(&mv);
+    moco_move_duration(&mv, motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0));
+    moco_move_speed(&mv, motion_get_float_or(args[ARG_speed].u_obj, MOCO_HUGE_VAL));
+    moco_move_amax(&mv, motion_get_float_or(args[ARG_amax].u_obj, MOCO_HUGE_VAL));
+    moco_move_blend(&mv, motion_get_float_or(args[ARG_blend].u_obj, (moco_float)0));
+    moco_move_replace(&mv, args[ARG_replace].u_bool);
+
+    motion_check_status(moco_rig_move(&self->rig, target, &mv));
 
     if (motion_rig_hardware_timer(self)) {
         motion_timer_kick();
@@ -928,6 +931,75 @@ static mp_obj_t motion_rig_move(size_t n_args, const mp_obj_t *pos_args, mp_map_
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_move_obj, 1, motion_rig_move);
+
+// A circular arc from the queue-end position to `target`, in the plane_a/plane_b
+// channel plane. Exactly one of `segments` (a chord count >= 2) or `deviation`
+// (max distance from the true circle) must be given. `radius` < 0 selects the
+// major arc; a huge radius degenerates to a straight move. `duration`, `speed`,
+// `amax`, `blend` apply as in move().  See moco_rig_move()'s arc mode.
+static mp_obj_t motion_rig_arc(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_target, ARG_radius, ARG_plane_a, ARG_plane_b, ARG_ccw,
+           ARG_segments, ARG_deviation, ARG_duration, ARG_speed, ARG_amax, ARG_blend };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_target,    MP_ARG_REQUIRED | MP_ARG_OBJ },
+        { MP_QSTR_radius,    MP_ARG_REQUIRED | MP_ARG_OBJ },
+        { MP_QSTR_plane_a,   MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_plane_b,   MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 1} },
+        { MP_QSTR_ccw,       MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
+        { MP_QSTR_segments,  MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_deviation, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_duration,  MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_speed,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_amax,      MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+        { MP_QSTR_blend,     MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_obj = mp_const_none} },
+    };
+    motion_rig_obj_t *self = MP_OBJ_TO_PTR(pos_args[0]);
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+
+    motion_rig_ensure_initialized(self);
+
+    bool have_seg = args[ARG_segments].u_obj != mp_const_none;
+    bool have_dev = args[ARG_deviation].u_obj != mp_const_none;
+    if (have_seg == have_dev) {
+        mp_raise_ValueError(MP_ERROR_TEXT("arc() needs exactly one of segments= or deviation="));
+    }
+
+    moco_float target[MOCO_MAX_CHANNELS];
+    motion_parse_target(self, args[ARG_target].u_obj, target);
+
+    moco_move mv;
+    moco_move_init(&mv);
+    moco_move_arc(&mv, mp_obj_get_float_to_f(args[ARG_radius].u_obj),
+                  args[ARG_ccw].u_bool,
+                  (uint8_t)args[ARG_plane_a].u_int, (uint8_t)args[ARG_plane_b].u_int);
+    if (have_seg) {
+        moco_move_arc_segments(&mv, (uint16_t)mp_obj_get_int(args[ARG_segments].u_obj));
+    } else {
+        moco_move_arc_deviation(&mv, mp_obj_get_float_to_f(args[ARG_deviation].u_obj));
+    }
+    moco_move_duration(&mv, motion_get_float_or(args[ARG_duration].u_obj, (moco_float)0));
+    moco_move_speed(&mv, motion_get_float_or(args[ARG_speed].u_obj, MOCO_HUGE_VAL));
+    moco_move_amax(&mv, motion_get_float_or(args[ARG_amax].u_obj, MOCO_HUGE_VAL));
+    moco_move_blend(&mv, motion_get_float_or(args[ARG_blend].u_obj, (moco_float)0));
+
+    motion_check_status(moco_rig_move(&self->rig, target, &mv));
+
+    if (motion_rig_hardware_timer(self)) {
+        motion_timer_kick();
+    }
+
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_arc_obj, 1, motion_rig_arc);
+
+// motion.arc_segments(radius, arc_angle, max_deviation) -> int
+static mp_obj_t motion_arc_segments(mp_obj_t radius, mp_obj_t arc_angle, mp_obj_t max_deviation) {
+    return MP_OBJ_NEW_SMALL_INT(moco_arc_segments(mp_obj_get_float_to_f(radius),
+                                                  mp_obj_get_float_to_f(arc_angle),
+                                                  mp_obj_get_float_to_f(max_deviation)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(motion_arc_segments_obj, motion_arc_segments);
 
 static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     enum { ARG_duration, ARG_replace };
@@ -940,9 +1012,8 @@ static mp_obj_t motion_rig_dwell(size_t n_args, const mp_obj_t *pos_args, mp_map
     mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
     moco_float duration = mp_obj_get_float_to_f(args[ARG_duration].u_obj);
-    bool replace = args[ARG_replace].u_bool;
 
-    motion_check_status(moco_rig_dwell(&self->rig, duration, replace ? MOCO_MOVE_REPLACE : 0u));
+    motion_check_status(moco_rig_dwell(&self->rig, duration, args[ARG_replace].u_bool));
     if (motion_rig_hardware_timer(self)) {
         motion_timer_kick();
     }
@@ -1081,6 +1152,7 @@ static const mp_rom_map_elem_t motion_rig_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_channel_position), MP_ROM_PTR(&motion_rig_set_channel_position_obj) },
     { MP_ROM_QSTR(MP_QSTR_corner_vel), MP_ROM_PTR(&motion_rig_corner_vel_obj) },
     { MP_ROM_QSTR(MP_QSTR_move), MP_ROM_PTR(&motion_rig_move_obj) },
+    { MP_ROM_QSTR(MP_QSTR_arc), MP_ROM_PTR(&motion_rig_arc_obj) },
     { MP_ROM_QSTR(MP_QSTR_dwell), MP_ROM_PTR(&motion_rig_dwell_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_trajectory), MP_ROM_PTR(&motion_rig_get_trajectory_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_speed), MP_ROM_PTR(&motion_rig_get_speed_obj) },
@@ -1156,6 +1228,7 @@ static const mp_rom_map_elem_t motion_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_motion) },
 
     { MP_ROM_QSTR(MP_QSTR_clock_bench), MP_ROM_PTR(&motion_clock_bench_obj) },
+    { MP_ROM_QSTR(MP_QSTR_arc_segments), MP_ROM_PTR(&motion_arc_segments_obj) },
 
     { MP_ROM_QSTR(MP_QSTR_Rig), MP_ROM_PTR(&motion_rig_type) },
     { MP_ROM_QSTR(MP_QSTR_Stats), MP_ROM_PTR(&motion_stats_type) },

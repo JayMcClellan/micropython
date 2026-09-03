@@ -110,6 +110,24 @@ class RigSVG:
         self._dests.append((x, y))
 
     @micropython.native
+    def arc(self, target, radius, **kw):
+        r = self._rig
+        # An arc queues one move per chord all at once, so drain until the
+        # whole thing fits rather than just down to one outstanding move. With
+        # deviation= the count isn't known here, so fall back to the ring size.
+        need = min(kw.get("segments") or r.q_depth - 1, r.q_depth - 1)
+        self._pump_until(lambda: r.queue_avail() < need)
+        r.arc(target, radius, **kw)
+
+        x, y = self._dest_xy
+        if len(target) > 0 and target[0] is not None:
+            x = target[0]
+        if len(target) > 1 and target[1] is not None:
+            y = target[1]
+        self._dest_xy = (x, y)
+        self._dests.append((x, y))
+
+    @micropython.native
     def dwell(self, duration, **kw):
         r = self._rig
         self._pump_until(lambda: (r.q_depth - r.queue_avail()) > 1)
