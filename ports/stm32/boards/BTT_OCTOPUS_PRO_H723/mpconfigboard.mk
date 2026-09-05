@@ -25,23 +25,5 @@ FROZEN_MANIFEST ?= $(BOARD_DIR)/manifest.py
 # Flash tool configuration
 OPENOCD_CONFIG = boards/BTT_OCTOPUS_PRO_H723/openocd_stm32h7.cfg
 
-# micromoco (experimental)
-CFLAGS += -I$(BOARD_DIR)/lib/micromoco
-SRC_C += $(BOARD_DIR)/lib/micromoco/micromoco_rt.c $(BOARD_DIR)/lib/micromoco/micromoco_api.c
-
-# The motion ISR is the one hot path on this board; -Os costs it real time for
-# flash savings that do not matter on one file. Everything else stays -Os.
-$(BUILD)/$(BOARD_DIR)/lib/micromoco/micromoco_rt.o: CFLAGS += -O2
-
-# Disassembly of the update path with C source interleaved, for investigating
-# where its cycles go: `make BOARD=BTT_OCTOPUS_PRO_H723 micromoco_lst`, then
-# read build-BTT_OCTOPUS_PRO_H723/boards/.../micromoco_rt.lst. Reads the DWARF
-# info -g already puts in the .o (see CFLAGS above) -- no separate compile.
-# At -O2 the compiler reorders and schedules across source lines, so a line's
-# instructions can appear split, out of order, or shared with a neighbour;
-# read it as "what code exists for this line", not a literal trace.
-$(BUILD)/$(BOARD_DIR)/lib/micromoco/micromoco_rt.lst: $(BUILD)/$(BOARD_DIR)/lib/micromoco/micromoco_rt.o
-	$(CROSS_COMPILE)objdump -d -S -l $< > $@
-
-.PHONY: micromoco_lst
-micromoco_lst: $(BUILD)/$(BOARD_DIR)/lib/micromoco/micromoco_rt.lst
+# This board's stepper motion driver is an out-of-tree user C module; build
+# with USER_C_MODULES pointing at the directory that contains it.
