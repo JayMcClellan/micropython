@@ -260,7 +260,8 @@ class Parser:
     def _linear(self, mode):
         """ Linear move; mode 0 = rapid, 1 = controlled """
         if self._read_axes(mode):
-            self._rig.move(self._target, speed=self.linear_speed[mode], blend=self.blend)
+            self._rig.move(self._target, speed=self.linear_speed[mode],
+                           entry_blend=self.blend, exit_blend=self.blend)
 
     def _G4(self):
         """ Dwell for a specified time (P = milliseconds, S = seconds) """

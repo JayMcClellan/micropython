@@ -62,10 +62,10 @@ def square(side=10, blend = 1):
     for n in range(4):
         while rig.queue_avail() < 4:
             pass
-        rig.move([side, 0], speed=max_speed, blend=blend)
-        rig.move([side, side], speed=max_speed, blend=blend)
-        rig.move([0, side], speed=max_speed, blend=blend)
-        rig.move([0, 0], speed=max_speed, blend=blend)
+        rig.move([side, 0], speed=max_speed, entry_blend=blend, exit_blend=blend)
+        rig.move([side, side], speed=max_speed, entry_blend=blend, exit_blend=blend)
+        rig.move([0, side], speed=max_speed, entry_blend=blend, exit_blend=blend)
+        rig.move([0, 0], speed=max_speed, entry_blend=blend, exit_blend=blend)
         if n == 0:
             rig.resume()
     while rig.is_running():
@@ -79,11 +79,11 @@ def svg(side=10, blend = 1):
 
     f = open(f"square_{side}_{blend}.svg", "w")
     svg = RigSVG(rig, f)
-    svg.move([side, 0], blend=blend); 
-    svg.move([side, side], blend=blend); 
-    svg.move([0, side], blend=blend); 
-    svg.move([0, 0], blend=blend)
-    svg.move([side/2, 0], blend=blend)
+    svg.move([side, 0], entry_blend=0, exit_blend=blend); 
+    svg.move([side, side], entry_blend=blend, exit_blend=blend); 
+    svg.move([0, side], entry_blend=blend, exit_blend=blend); 
+    svg.move([0, 0], entry_blend=blend, exit_blend=blend)
+    svg.move([side/2, 0], entry_blend=blend, exit_blend=0)
     svg.close()
     f.close()
 
