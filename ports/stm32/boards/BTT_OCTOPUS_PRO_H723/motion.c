@@ -1016,10 +1016,10 @@ static mp_obj_t motion_rig_arc(size_t n_args, const mp_obj_t *pos_args, mp_map_t
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(motion_rig_arc_obj, 1, motion_rig_arc);
 
-// motion.arc_segments(arc_angle, max_deviation) -> int
-static mp_obj_t motion_arc_segments(mp_obj_t arc_angle, mp_obj_t max_deviation) {
-    return MP_OBJ_NEW_SMALL_INT(moco_arc_segments(mp_obj_get_float_to_f(arc_angle),
-                                                  mp_obj_get_float_to_f(max_deviation)));
+// motion.arc_segments(max_deviation, arc_angle) -> int
+static mp_obj_t motion_arc_segments(mp_obj_t max_deviation, mp_obj_t arc_angle) {
+    return MP_OBJ_NEW_SMALL_INT(moco_arc_segments(mp_obj_get_float_to_f(max_deviation),
+                                                  mp_obj_get_float_to_f(arc_angle)));
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(motion_arc_segments_obj, motion_arc_segments);
 

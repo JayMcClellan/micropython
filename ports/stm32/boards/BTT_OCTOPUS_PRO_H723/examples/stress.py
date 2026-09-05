@@ -37,8 +37,8 @@ def yoyo():
   for i in range(10):
       while rig.queue_avail() < 1:
           pass
-      rig.move([100,101,102,103,104,105,106,107], blend=999)
-      rig.move([-100,101,-102,103,-104,105,-106,107], blend=999)
-      rig.move([100,-101,102,-103,104,-105,106,-107], blend=999)
-      rig.move([0,0,0,0,0,0,0,0], blend=999)
+      rig.move([100,101,102,103,104,105,106,107], entry_blend=999, exit_blend=999)
+      rig.move([-100,101,-102,103,-104,105,-106,107], entry_blend=999, exit_blend=999)
+      rig.move([100,-101,102,-103,104,-105,106,-107], entry_blend=999, exit_blend=999)
+      rig.move([0,0,0,0,0,0,0,0], entry_blend=999, exit_blend=999)
 

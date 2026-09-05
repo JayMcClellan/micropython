@@ -87,7 +87,7 @@ def svg(side=10, blend = 1):
     svg.close()
     f.close()
 
-def arcs(radius=10, segments=24):
+def arcs(radius=10, segments=None):
     rig = Rig(2, q_depth=40, hardware_timer=False)
     rig.stepper(0, unit_scale=1/1000, vmax=10.0, amax=20.0)
     rig.stepper(1, unit_scale=1/1000, vmax=10.0, amax=20.0)
